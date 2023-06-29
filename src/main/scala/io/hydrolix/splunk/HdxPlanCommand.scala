@@ -7,15 +7,11 @@ import com.fasterxml.jackson.databind.PropertyNamingStrategies.SnakeCaseStrategy
 import com.fasterxml.jackson.databind.annotation.JsonNaming
 import org.slf4j.LoggerFactory
 
-import java.io.{BufferedReader, InputStreamReader}
-import scala.concurrent.ExecutionContext.Implicits.global
-import scala.concurrent.duration.Duration
-import scala.concurrent.{Await, Future}
-
 @JsonNaming(classOf[SnakeCaseStrategy])
-case class ChunkedMetadata(       action: String,
+case class ChunkedRequestMetadata(action: String,
                                  preview: Boolean,
              streamingCommandWillRestart: Boolean,
+                                finished: Boolean,
   @JsonProperty("searchinfo") searchInfo: SearchInfo)
 
 @JsonNaming(classOf[SnakeCaseStrategy])
@@ -35,65 +31,51 @@ case class SearchInfo(                  args: List[String],
                                 earliestTime: Int,
                                   latestTime: Int)
 
+@JsonNaming(classOf[SnakeCaseStrategy])
+case class GetInfoResponseMeta(   `type`: CommandType,
+                              generating: Boolean,
+                          requiredFields: List[String],
+ @JsonProperty("maxwait")        maxWait: Option[Int],
+                          streamingPreop: String,
+                                finished: Boolean,
+                                   error: String,
+                               inspector: InspectorMessages)
+
+case class InspectorMessages(messages: List[(String, String)])
+
+/**
+ * TODO there should definitely be more fields here...
+ */
+@JsonNaming(classOf[SnakeCaseStrategy])
+case class ExecuteResponseMeta(finished: Boolean)
 
 object HdxPlanCommand extends App {
   private val logger = LoggerFactory.getLogger(getClass)
 
-  private val chunkedHeaderR = """chunked 1.0,(\d+),(\d+)""".r
-
-  /**
-   * Reader must be positioned before a chunk header line
-   */
-  private def readChunk(stdin: BufferedReader): (Option[ChunkedMetadata], Option[String]) = {
-    var meta: Option[ChunkedMetadata] = None
-    var data: Option[String] = None
-
-    val readF = Future {
-      stdin.readLine() match {
-        case chunkedHeaderR(mlen, dlen) =>
-          val mbuf = Array.ofDim[Char](mlen.toInt)
-          val dbuf = Array.ofDim[Char](dlen.toInt)
-          val metaLen = stdin.read(mbuf)
-          val dataLen = stdin.read(dbuf)
-
-          meta = if (metaLen > 0) Some(JSON.objectMapper.readValue[ChunkedMetadata](new String(mbuf, 0, metaLen))) else sys.error(s"Expected metadata but size was $mlen")
-          data = if (dataLen > 0) Some(new String(dbuf, 0, dataLen)) else None
-        case null =>
-          // OK, stream is done
-          meta = None
-          data = None
-        case other =>
-          System.err.println(s"Got unexpected header line: $other")
-          meta = None
-          data = None
-      }
-    }
-
-    Await.result(readF, Duration.Inf)
-
-    meta -> data
-  }
-
-  def writeOutput(metadata: String, data: String): Unit = {
-    System.out.println(s"chunked 1.0,${metadata.length},${data.length}")
-    System.out.println(metadata)
-    System.out.println(data)
-  }
-
-  val stdin = new BufferedReader(new InputStreamReader(System.in, "UTF-8"))
-
-  val (getInfoMeta, getInfoData) = readChunk(stdin)
+  val (getInfoMeta, getInfoData) = readChunk(System.in)
   logger.info(s"Got getinfo metadata: $getInfoMeta")
   logger.info(s"Got getinfo data: $getInfoData")
 
-  writeOutput("""{"type": "streaming", "generating": true}""","")
+  val resp = GetInfoResponseMeta(
+    CommandType.streaming,
+    true,
+    Nil,
+    Some(10),
+    "",
+    false,
+    "",
+    InspectorMessages(Nil)
+  )
 
-  val (execMeta, execData) = readChunk(stdin)
+  writeChunk(System.out, JSON.objectMapper.writeValueAsBytes(resp), None)
+
+  val (execMeta, execData) = readChunk(System.in)
 
   logger.info(s"Got exec metadata: $execMeta")
   logger.info(s"Got exec data: $execData")
 
-  writeOutput("""{"finished":true}""", "")
+  val resp2 = ExecuteResponseMeta(true)
+  writeChunk(System.out, JSON.objectMapper.writeValueAsBytes(resp2), None)
 
-  stdin.close()
+  System.in.close()
 }

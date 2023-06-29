@@ -22,5 +22,6 @@ assemblyMergeStrategy := {
 mainClass := Some("io.hydrolix.splunk.HdxPlanCommand")
 
 libraryDependencies := Seq(
-  "io.hydrolix" %% "hydrolix-spark-connector" % "1.1.0-SNAPSHOT"
+  "io.hydrolix" %% "hydrolix-spark-connector" % "1.1.0-SNAPSHOT",
+  "com.github.sbt" % "junit-interface" % "0.13.3" % Test,
 )

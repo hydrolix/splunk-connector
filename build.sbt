@@ -37,5 +37,6 @@ mainClass := Some("io.hydrolix.splunk.HdxPlanCommand")
 libraryDependencies ++= Seq(
   "io.hydrolix" %% "hydrolix-spark-connector" % "1.1.0-SNAPSHOT",
   ("org.apache.spark" %% "spark-sql" % "3.4.1").exclude("org.apache.logging.log4j", "log4j-slf4j2-impl"),
+  "com.github.tototoshi" %% "scala-csv" % "1.3.10",
   "com.github.sbt" % "junit-interface" % "0.13.3" % Test,
 )

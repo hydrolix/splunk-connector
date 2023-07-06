@@ -2,9 +2,9 @@ package io.hydrolix.splunk
 
 import io.hydrolix.spark.model.{HdxConnectionInfo, JSON}
 
-import java.net.{Socket, URI}
 import java.net.http.HttpResponse.BodyHandlers
 import java.net.http.{HttpClient, HttpRequest}
+import java.net.{Socket, URI}
 import java.security.cert.X509Certificate
 import java.util.Base64
 import javax.net.ssl.{SSLContext, SSLEngine, X509ExtendedTrustManager}
@@ -23,20 +23,19 @@ object Config {
     .sslContext(ctx)
     .build()
 
-  def loadUserPass(user: String, pass: String): HdxConnectionInfo = {
+  def loadUserPass(url: URI, user: String, pass: String): HdxConnectionInfo = {
     val userPass = Base64.getEncoder.encodeToString(s"$user:$pass".getBytes("UTF-8"))
-    load("Basic", userPass)
+    load(url, "Basic", userPass)
   }
 
-  def loadSessionKey(sessionKey: String): HdxConnectionInfo = {
-    load("Splunk", sessionKey)
+  def loadSessionKey(url: URI, sessionKey: String): HdxConnectionInfo = {
+    load(url, "Splunk", sessionKey)
   }
 
-  private def load(realm: String, cred: String): HdxConnectionInfo = {
+  private def load(url: URI, realm: String, cred: String): HdxConnectionInfo = {
     // TODO maybe load other configs not named `default`?
-    // TODO will this always be localhost?
     val getConfigs = HttpRequest
-      .newBuilder(new URI("https://localhost:8089/servicesNS/nobody/hydrolix/storage/collections/data/hdx_config/default"))
+      .newBuilder(url.resolve("/servicesNS/nobody/hydrolix/storage/collections/data/hdx_config/default"))
       .setHeader("Authorization", s"$realm $cred")
       .build()
 

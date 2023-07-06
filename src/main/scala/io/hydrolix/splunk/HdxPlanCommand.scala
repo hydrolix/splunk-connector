@@ -1,137 +1,112 @@
 package io.hydrolix.splunk
 
-import io.hydrolix.spark.connector.{HdxScanBuilder, HdxTable, HdxTableCatalog}
+import io.hydrolix.spark.connector.{HdxScanBuilder, HdxScanPartition, HdxTable, HdxTableCatalog}
 import io.hydrolix.spark.model.{HdxConnectionInfo, JSON}
 
-import com.fasterxml.jackson.annotation.JsonProperty
-import com.fasterxml.jackson.databind.PropertyNamingStrategies.SnakeCaseStrategy
-import com.fasterxml.jackson.databind.annotation.JsonNaming
-import org.apache.spark.sql.HdxPushdown.GetField
+import com.github.tototoshi.csv.CSVWriter
+import org.apache.spark.sql.HdxPushdown.{GetField, Literal}
+import org.apache.spark.sql.catalyst.util.DateTimeUtils
 import org.apache.spark.sql.connector.catalog.Identifier
-import org.apache.spark.sql.connector.expressions.LiteralValue
 import org.apache.spark.sql.connector.expressions.filter.{And, Predicate}
-import org.apache.spark.sql.types.DataTypes
+import org.apache.spark.sql.types.{StructField, StructType}
 import org.apache.spark.sql.util.CaseInsensitiveStringMap
 import org.slf4j.LoggerFactory
 
+import java.io.{ByteArrayInputStream, ByteArrayOutputStream}
 import java.net.URI
 import scala.jdk.CollectionConverters._
-
-@JsonNaming(classOf[SnakeCaseStrategy])
-case class ChunkedRequestMetadata(action: String,
-                                 preview: Boolean,
-             streamingCommandWillRestart: Boolean,
-                                finished: Boolean,
-  @JsonProperty("searchinfo") searchInfo: SearchInfo)
-
-@JsonNaming(classOf[SnakeCaseStrategy])
-case class SearchInfo(                  args: List[String],
-                                     rawArgs: List[String],
-                                 dispatchDir: String,
-                                         sid: String,
-                                         app: String,
-                                       owner: String,
-                                    username: String,
-                                  sessionKey: String,
-                                  splunkdUri: String,
-                               splunkVersion: String,
-                                      search: String,
-                                     command: String,
-@JsonProperty("maxresultrows") maxResultRows: Int,
-                                earliestTime: BigDecimal,
-                                  latestTime: BigDecimal)
-
-@JsonNaming(classOf[SnakeCaseStrategy])
-case class GetInfoResponseMeta(`type`: CommandType,
-                           generating: Boolean,
-                       requiredFields: List[String],
-  @JsonProperty("maxwait")    maxWait: Option[Int],
-                       streamingPreop: String,
-                             finished: Boolean,
-                                error: String,
-                            inspector: InspectorMessages)
-
-case class InspectorMessages(messages: List[(String, String)])
-
-/**
- * TODO there should definitely be more fields here...
- */
-@JsonNaming(classOf[SnakeCaseStrategy])
-case class ExecuteResponseMeta(finished: Boolean)
 
 object HdxPlanCommand {
   private val logger = LoggerFactory.getLogger(getClass)
 
   def main(args: Array[String]): Unit = {
-    val (getInfoMeta, getInfoData) = readChunk(System.in)
-    logger.info(s"Got getinfo metadata: $getInfoMeta")
-    logger.info(s"Got getinfo data: $getInfoData")
+    val getInfoMeta = readInitialChunk(System.in)
+
+    logger.info(s"PLAN getinfo metadata: $getInfoMeta")
 
     val resp = GetInfoResponseMeta(
-      CommandType.streaming,
-      true,
+      CommandType.events,
+      generating = true,
       Nil,
-      Some(10),
+      Some(600),
       "",
-      false,
+      finished = false,
       "",
       InspectorMessages(Nil)
     )
 
     writeChunk(System.out, JSON.objectMapper.writeValueAsBytes(resp), None)
 
-    val info = Config.loadSessionKey(getInfoMeta.searchInfo.sessionKey)
-    logger.info(info.toString)
+    readChunk(System.in) match {
+      case (Some(execMeta), execData) =>
+        logger.info(s"PLAN execute metadata: $execMeta")
+        logger.info(s"PLAN execute data: $execData")
 
-    val opts = new CaseInsensitiveStringMap((Map(
-      HdxConnectionInfo.OPT_API_URL -> info.apiUrl.toString,
-      HdxConnectionInfo.OPT_JDBC_URL -> info.jdbcUrl,
-      HdxConnectionInfo.OPT_USERNAME -> info.user,
-      HdxConnectionInfo.OPT_PASSWORD -> info.password,
-      HdxConnectionInfo.OPT_CLOUD_CRED_1 -> info.cloudCred1)
-      ++ info.cloudCred2.map(HdxConnectionInfo.OPT_CLOUD_CRED_2 -> _).toMap
-      ).asJava)
+        val info = Config.loadSessionKey(new URI(getInfoMeta.searchInfo.splunkdUri), getInfoMeta.searchInfo.sessionKey)
+        logger.info(info.toString)
 
-    val cat = new HdxTableCatalog()
-    cat.initialize("hydrolix", opts)
-    val tableName = getInfoMeta.searchInfo.args.find(_.startsWith("table=")).map(_.drop(6).trim).getOrElse(sys.error("table argument is required!"))
-    val bits = tableName.split('.')
-    if (bits.length != 2) sys.error("Table name must be in `db.table` format")
-    val table = cat.loadTable(Identifier.of(Array(bits(0)), bits(1))).asInstanceOf[HdxTable]
+        val (db: String, table: String) = getDbTableArg(getInfoMeta)
+
+        val partitions = planPartitions(db, table, getInfoMeta.searchInfo.earliestTime, getInfoMeta.searchInfo.latestTime, info)
+
+        val out = new ByteArrayOutputStream(16384)
+        val writer = CSVWriter.open(out)
+        writer.writeRow(partitionMetaColumns)
+
+        for (partition <- partitions) {
+          writer.writeRow(List(
+            partition.db,
+            partition.table,
+            partition.path,
+            JSON.objectMapper.writeValueAsString(partition.hdxCols),
+            compress(serialize(partition.pushed))
+          ))
+        }
+
+        out.close()
+        val outBytes = out.toByteArray
+
+        val resp2 = ExecuteResponseMeta(true)
+        writeChunk(System.out, JSON.objectMapper.writeValueAsBytes(resp2), Some((outBytes.length, new ByteArrayInputStream(outBytes))))
+
+        System.in.close()
+
+      case (None, _) =>
+        // TODO do we need to send or expect a finished=true?
+        sys.exit(0)
+    }
+  }
+
+  private def planPartitions(dbName: String,
+                          tableName: String,
+                           earliest: BigDecimal,
+                             latest: BigDecimal,
+                               info: HdxConnectionInfo)
+                                   : List[HdxScanPartition] =
+  {
+    val opts = new CaseInsensitiveStringMap(info.asMap.asJava)
+
+    val catalog = new HdxTableCatalog()
+    catalog.initialize("hydrolix", opts)
+    val table = catalog.loadTable(Identifier.of(Array(dbName), tableName)).asInstanceOf[HdxTable]
     val sb = new HdxScanBuilder(info, table.storage, table)
+    sb.pruneColumns(StructType(table.hdxCols.values.toList.map { hcol =>
+      StructField(hcol.name, hcol.sparkType, hcol.nullable)
+    }))
 
-    val minTimeMicros = (getInfoMeta.searchInfo.earliestTime / 1000000).toLongExact
-    val maxTimeMicros = (getInfoMeta.searchInfo.latestTime / 1000000).toLongExact
+    val minTimestamp = DateTimeUtils.microsToInstant((earliest * 1000000).toLong)
+    val maxTimestamp = DateTimeUtils.microsToInstant((latest * 1000000).toLong)
+    logger.info(s"minTimestamp: $minTimestamp")
+    logger.info(s"maxTimestamp: $maxTimestamp")
+
     sb.pushPredicates(Array(new And(
-      new Predicate(">=", Array(GetField(table.primaryKeyField), LiteralValue(minTimeMicros, DataTypes.LongType))),
-      new Predicate("<=", Array(GetField(table.primaryKeyField), LiteralValue(maxTimeMicros, DataTypes.LongType)))
+      new Predicate(">=", Array(GetField(table.primaryKeyField), Literal(minTimestamp))),
+      new Predicate("<=", Array(GetField(table.primaryKeyField), Literal(maxTimestamp)))
     )))
 
     val scan = sb.build()
     val batch = scan.toBatch
-    val partitions = batch.planInputPartitions()
-    // TODO write the partition metadata to output
 
-
-    val (execMeta, execData) = readChunk(System.in)
-
-    logger.info(s"Got exec metadata: $execMeta")
-    logger.info(s"Got exec data: $execData")
-
-    val resp2 = ExecuteResponseMeta(true)
-    writeChunk(System.out, JSON.objectMapper.writeValueAsBytes(resp2), None)
-
-    System.in.close()
+    batch.planInputPartitions().toList.map(_.asInstanceOf[HdxScanPartition])
   }
 }
-
-@JsonNaming(classOf[SnakeCaseStrategy])
-case class HdxConfig(
-  @JsonProperty("_key")               _key: String,
-  @JsonProperty("_user")             _user: String,
-                                   jdbcUrl: String,
-                                    apiUrl: URI,
-                                  username: String,
-                                  password: String,
-  @JsonProperty("cloud_cred_1") cloudCred1: String,
-  @JsonProperty("cloud_cred_2") cloudCred2: Option[String])

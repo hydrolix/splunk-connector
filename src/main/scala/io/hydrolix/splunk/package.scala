@@ -29,6 +29,7 @@ package object splunk {
   private val chunkedHeaderR = """^chunked 1.0,(\d+),(\d+)$""".r
   private val tableArgR = """^table\s*=\s*(.*?)\.(.*?)$""".r
   private val fieldsArgR = """^fields\s*=\s*(.*?)$""".r
+  private val otherArgR = """^(.*?)\s*=\s*(.*?)$""".r
 
   def getDbTableArg(meta: ChunkedRequestMetadata): (String, String) = {
     meta.searchInfo.args.collectFirst {
@@ -40,6 +41,12 @@ package object splunk {
     meta.searchInfo.args.collectFirst {
       case fieldsArgR(s) => s.split(",\\s*").toList
     }.getOrElse(Nil)
+  }
+
+  def getOtherTerms(meta: ChunkedRequestMetadata): List[(String, String)] = {
+    meta.searchInfo.args.collect {
+      case otherArgR(name, value) if name != "fields" && name != "table" => name -> value
+    }
   }
 
   def readInitialChunk(stdin: InputStream): ChunkedRequestMetadata = {
@@ -141,12 +148,15 @@ package object splunk {
 
   def getRequestedCols(getInfoMeta: ChunkedRequestMetadata, table: HdxTable): StructType = {
     val requestedFields = getFieldsArg(getInfoMeta)
+    val otherTerms = getOtherTerms(getInfoMeta)
 
-    if (requestedFields.isEmpty) {
+    val fields = (requestedFields ++ otherTerms.map(_._1)).distinct
+
+    if (fields.isEmpty) {
       table.schema
     } else {
       val schemaFields = table.schema.map { field => field.name -> field }.toMap
-      StructType(requestedFields.flatMap { name =>
+      StructType(fields.flatMap { name =>
         val mf = schemaFields.get(name)
         if (mf.isEmpty) logger.warn(s"Requested field $name not found in table schema (${table.schema})")
         mf
@@ -158,6 +168,7 @@ package object splunk {
                       cols: StructType,
               minTimestamp: Instant,
               maxTimestamp: Instant,
+                otherTerms: Map[String, String],
                       info: HdxConnectionInfo)
                           : List[HdxScanPartition] =
   {
@@ -169,8 +180,10 @@ package object splunk {
 
     sb.pushPredicates(Array(new And(
       new Predicate(">=", Array(GetField(table.primaryKeyField), Literal(minTimestamp))),
-      new Predicate("<=", Array(GetField(table.primaryKeyField), Literal(maxTimestamp)))
-    )))
+      new Predicate("<=", Array(GetField(table.primaryKeyField), Literal(maxTimestamp))),
+    )) ++ otherTerms.map {
+      case (k, v) => new Predicate("=", Array(GetField(k), Literal(v)))
+    })
 
     val scan = sb.build()
     val batch = scan.toBatch

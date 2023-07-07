@@ -46,7 +46,7 @@ object HdxPlanCommand {
         val cat = tableCatalog(info)
         val table = hdxTable(cat, dbName, tableName)
         val cols = getRequestedCols(getInfoMeta, table)
-        val partitions = planPartitions(table, cols, minTimestamp, maxTimestamp, info)
+        val partitions = planPartitions(table, cols, minTimestamp, maxTimestamp, Map(), info)
 
         val out = new ByteArrayOutputStream(16384)
         val writer = CSVWriter.open(out)

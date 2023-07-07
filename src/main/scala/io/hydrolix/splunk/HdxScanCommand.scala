@@ -52,7 +52,9 @@ object HdxScanCommand {
         val minTimestamp = DateTimeUtils.microsToInstant((getInfoMeta.searchInfo.earliestTime * 1000000).toLong)
         val maxTimestamp = DateTimeUtils.microsToInstant((getInfoMeta.searchInfo.latestTime * 1000000).toLong)
 
-        val partitions = planPartitions(table, cols, minTimestamp, maxTimestamp, info)
+        val otherTerms = getOtherTerms(getInfoMeta).toMap
+
+        val partitions = planPartitions(table, cols, minTimestamp, maxTimestamp, otherTerms, info)
 
         // TODO do output in 50k chunks over multiple iterations, not just a single spew
         // TODO do output in 50k chunks over multiple iterations, not just a single spew
@@ -68,21 +70,43 @@ object HdxScanCommand {
         var written = 0
         for (partition <- partitions) {
           val timestampPos = partition.schema.fieldIndex(table.primaryKeyField)
+          val otherArgPoss = otherTerms.map {
+            case (name, value) =>
+              val pos = partition.schema.fieldIndex(name)
+              val typ = partition.schema.fields(pos).dataType
+              if (typ != DataTypes.StringType) sys.error(s"Can't search for $name of type $typ (only Strings)")
+              pos -> value
+          }
 
           val pr = new HdxPartitionReader(info, table.storage, table.primaryKeyField, partition)
           while (pr.next()) {
             val row = pr.get()
             count += 1
-            val timestamp = DateTimeUtils.microsToInstant(row.getLong(timestampPos))
-            if (timestamp.compareTo(minTimestamp) >= 0 && timestamp.compareTo(maxTimestamp) <= 0) {
-              written += 1
-              writer.writeRow(rowToCsv(cols, row))
+            val rowTimestamp = DateTimeUtils.microsToInstant(row.getLong(timestampPos))
+
+            if (rowTimestamp.compareTo(minTimestamp) >= 0 && rowTimestamp.compareTo(maxTimestamp) <= 0) {
+              val otherValuesMatch = otherArgPoss.forall {
+                case (pos, "null") =>
+                  // Special-case "foo=null"
+                  row.isNullAt(pos)
+                case (pos, value) =>
+                  if (row.isNullAt(pos)) {
+                    false
+                  } else {
+                    row.getString(pos) == value
+                  }
+              }
+
+              if (otherValuesMatch) {
+                written += 1
+                writer.writeRow(rowToCsv(cols, row))
+              }
             }
           }
           pr.close()
         }
 
-        logger.info(s"SCAN scanned $count records; written $written within time bounds (${count - written} filtered out)")
+        logger.info(s"SCAN scanned $count records; written $written (${count - written} filtered out)")
 
         writer.close()
         val dataLen = tmp.length()

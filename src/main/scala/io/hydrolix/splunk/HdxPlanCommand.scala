@@ -1,20 +1,12 @@
 package io.hydrolix.splunk
 
-import io.hydrolix.spark.connector.{HdxScanBuilder, HdxScanPartition, HdxTable, HdxTableCatalog}
-import io.hydrolix.spark.model.{HdxConnectionInfo, JSON}
+import io.hydrolix.spark.model.JSON
 
 import com.github.tototoshi.csv.CSVWriter
-import org.apache.spark.sql.HdxPushdown.{GetField, Literal}
-import org.apache.spark.sql.catalyst.util.DateTimeUtils
-import org.apache.spark.sql.connector.catalog.Identifier
-import org.apache.spark.sql.connector.expressions.filter.{And, Predicate}
-import org.apache.spark.sql.types.{StructField, StructType}
-import org.apache.spark.sql.util.CaseInsensitiveStringMap
 import org.slf4j.LoggerFactory
 
 import java.io.{ByteArrayInputStream, ByteArrayOutputStream}
 import java.net.URI
-import scala.jdk.CollectionConverters._
 
 object HdxPlanCommand {
   private val logger = LoggerFactory.getLogger(getClass)
@@ -42,12 +34,15 @@ object HdxPlanCommand {
         logger.info(s"PLAN execute metadata: $execMeta")
         logger.info(s"PLAN execute data: $execData")
 
-        val info = Config.loadSessionKey(new URI(getInfoMeta.searchInfo.splunkdUri), getInfoMeta.searchInfo.sessionKey)
-        logger.info(info.toString)
+        val info = Config.loadWithSessionKey(new URI(getInfoMeta.searchInfo.splunkdUri), getInfoMeta.searchInfo.sessionKey)
+        logger.info(s"PLAN config loaded: ${info.toString}")
 
-        val (db: String, table: String) = getDbTableArg(getInfoMeta)
+        val (dbName, tableName) = getDbTableArg(getInfoMeta)
 
-        val partitions = planPartitions(db, table, getInfoMeta.searchInfo.earliestTime, getInfoMeta.searchInfo.latestTime, info)
+        val cat = tableCatalog(info)
+        val table = hdxTable(cat, dbName, tableName)
+        val cols = getRequestedCols(getInfoMeta, table)
+        val partitions = planPartitions(table, cols, getInfoMeta.searchInfo.earliestTime, getInfoMeta.searchInfo.latestTime, info)
 
         val out = new ByteArrayOutputStream(16384)
         val writer = CSVWriter.open(out)
@@ -75,38 +70,5 @@ object HdxPlanCommand {
         // TODO do we need to send or expect a finished=true?
         sys.exit(0)
     }
-  }
-
-  private def planPartitions(dbName: String,
-                          tableName: String,
-                           earliest: BigDecimal,
-                             latest: BigDecimal,
-                               info: HdxConnectionInfo)
-                                   : List[HdxScanPartition] =
-  {
-    val opts = new CaseInsensitiveStringMap(info.asMap.asJava)
-
-    val catalog = new HdxTableCatalog()
-    catalog.initialize("hydrolix", opts)
-    val table = catalog.loadTable(Identifier.of(Array(dbName), tableName)).asInstanceOf[HdxTable]
-    val sb = new HdxScanBuilder(info, table.storage, table)
-    sb.pruneColumns(StructType(table.hdxCols.values.toList.map { hcol =>
-      StructField(hcol.name, hcol.sparkType, hcol.nullable)
-    }))
-
-    val minTimestamp = DateTimeUtils.microsToInstant((earliest * 1000000).toLong)
-    val maxTimestamp = DateTimeUtils.microsToInstant((latest * 1000000).toLong)
-    logger.info(s"minTimestamp: $minTimestamp")
-    logger.info(s"maxTimestamp: $maxTimestamp")
-
-    sb.pushPredicates(Array(new And(
-      new Predicate(">=", Array(GetField(table.primaryKeyField), Literal(minTimestamp))),
-      new Predicate("<=", Array(GetField(table.primaryKeyField), Literal(maxTimestamp)))
-    )))
-
-    val scan = sb.build()
-    val batch = scan.toBatch
-
-    batch.planInputPartitions().toList.map(_.asInstanceOf[HdxScanPartition])
   }
 }

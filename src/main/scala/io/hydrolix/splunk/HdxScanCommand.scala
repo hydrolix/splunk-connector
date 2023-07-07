@@ -1,8 +1,18 @@
 package io.hydrolix.splunk
 
+import io.hydrolix.spark.connector.{HdxPartitionReader, HdxTable}
 import io.hydrolix.spark.model.JSON
 
+import com.github.tototoshi.csv.CSVWriter
+import org.apache.spark.sql.catalyst.InternalRow
+import org.apache.spark.sql.catalyst.util.DateTimeUtils
+import org.apache.spark.sql.types.{DataType, DataTypes, DecimalType, StructType}
 import org.slf4j.LoggerFactory
+
+import java.io.{File, FileInputStream, FileOutputStream}
+import java.net.URI
+import java.time.ZoneOffset
+import java.time.format.DateTimeFormatter
 
 object HdxScanCommand {
   private val logger = LoggerFactory.getLogger(getClass)
@@ -11,14 +21,12 @@ object HdxScanCommand {
     val getInfoMeta = readInitialChunk(System.in)
     logger.info(s"SCAN getinfo metadata: $getInfoMeta")
 
-    val (db, table) = getDbTableArg(getInfoMeta)
-
     val resp = GetInfoResponseMeta(
       CommandType.streaming,
-      generating = false,
-      partitionMetaColumns,
+      generating = true,
+      Nil,
       Some(600),
-      s"|hdxplan table=$db.$table",
+      "",
       finished = false,
       "",
       InspectorMessages(Nil)
@@ -29,7 +37,72 @@ object HdxScanCommand {
     readChunk(System.in) match {
       case (None, _) => sys.exit(0)
       case (Some(execMeta), execData) =>
-        sys.error("TODO handle execute phase of hdxscan")
+        val info = Config.loadWithSessionKey(new URI(getInfoMeta.searchInfo.splunkdUri), getInfoMeta.searchInfo.sessionKey)
+        logger.info(s"SCAN config loaded: ${info.toString}")
+
+        val (dbName, tableName) = getDbTableArg(getInfoMeta)
+
+        val cat = tableCatalog(info)
+
+        val table = hdxTable(cat, dbName, tableName)
+
+        val cols = getRequestedCols(getInfoMeta, table)
+        logger.info(s"SCAN requested columns: $cols")
+
+        val partitions = planPartitions(table, cols, getInfoMeta.searchInfo.earliestTime, getInfoMeta.searchInfo.latestTime, info)
+
+        // TODO do output in 50k chunks over multiple iterations, not just a single spew
+        // TODO do output in 50k chunks over multiple iterations, not just a single spew
+        // TODO do output in 50k chunks over multiple iterations, not just a single spew
+        // TODO do output in 50k chunks over multiple iterations, not just a single spew
+
+        val tmp = File.createTempFile("hdx_output", ".csv")
+        tmp.deleteOnExit()
+        val writer = CSVWriter.open(new FileOutputStream(tmp))
+        writer.writeRow(cols.map(_.name))
+
+        for (partition <- partitions) {
+          val pr = new HdxPartitionReader(info, table.storage, table.primaryKeyField, partition)
+          while (pr.next()) {
+            val rec = pr.get()
+            writer.writeRow(rowToCsv(cols, rec))
+          }
+          pr.close()
+        }
+        writer.close()
+        val dataLen = tmp.length()
+        val execResp = ExecuteResponseMeta(true)
+        writeChunk(System.out, JSON.objectMapper.writeValueAsBytes(execResp), Some((dataLen.toInt, new FileInputStream(tmp))))
+    }
+  }
+
+  private def rowToCsv(schema: StructType, row: InternalRow): List[String] = {
+    for ((field, i) <- schema.fields.zipWithIndex.toList) yield {
+      get(row, i, field.dataType)
+    }
+  }
+
+  private def get(row: InternalRow, i: Int, typ: DataType): String = {
+    if (row.isNullAt(i)) {
+      null
+    } else typ match {
+      case DataTypes.BooleanType => row.getBoolean(i).toString
+      case DataTypes.StringType => row.getString(i)
+      case DataTypes.LongType => row.getLong(i).toString
+      case DataTypes.IntegerType => row.getInt(i).toString
+      case DataTypes.ShortType => row.getShort(i).toString
+      case DataTypes.ByteType => row.getByte(i).toString
+      case DataTypes.DoubleType => row.getDouble(i).toString
+      case DataTypes.FloatType => row.getFloat(i).toString
+      case DataTypes.TimestampType | DataTypes.TimestampNTZType =>
+        val micros = row.getLong(i)
+        val inst = DateTimeUtils.microsToInstant(micros)
+        DateTimeFormatter.ISO_OFFSET_DATE_TIME.format(inst.atOffset(ZoneOffset.UTC))
+      case dt: DecimalType =>
+        row.getDecimal(i, dt.precision, dt.scale).toString()
+      case other =>
+        // TODO arrays, maps
+        sys.error(s"Can't serialize $other values")
     }
   }
 }

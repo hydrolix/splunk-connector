@@ -23,12 +23,12 @@ object Config {
     .sslContext(ctx)
     .build()
 
-  def loadUserPass(url: URI, user: String, pass: String): HdxConnectionInfo = {
+  def loadWithUserPass(url: URI, user: String, pass: String): HdxConnectionInfo = {
     val userPass = Base64.getEncoder.encodeToString(s"$user:$pass".getBytes("UTF-8"))
     load(url, "Basic", userPass)
   }
 
-  def loadSessionKey(url: URI, sessionKey: String): HdxConnectionInfo = {
+  def loadWithSessionKey(url: URI, sessionKey: String): HdxConnectionInfo = {
     load(url, "Splunk", sessionKey)
   }
 

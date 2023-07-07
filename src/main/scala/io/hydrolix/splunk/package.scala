@@ -1,9 +1,16 @@
 package io.hydrolix
 
-import io.hydrolix.spark.model.JSON
+import io.hydrolix.spark.connector.{HdxScanBuilder, HdxScanPartition, HdxTable, HdxTableCatalog}
+import io.hydrolix.spark.model.{HdxConnectionInfo, JSON}
 
 import com.google.common.io.ByteStreams
 import com.google.common.primitives.Bytes
+import org.apache.spark.sql.HdxPushdown.{GetField, Literal}
+import org.apache.spark.sql.catalyst.util.DateTimeUtils
+import org.apache.spark.sql.connector.catalog.Identifier
+import org.apache.spark.sql.connector.expressions.filter.{And, Predicate}
+import org.apache.spark.sql.types.{StructField, StructType}
+import org.apache.spark.sql.util.CaseInsensitiveStringMap
 import org.slf4j.LoggerFactory
 
 import java.io.{ByteArrayOutputStream, InputStream, ObjectOutputStream, OutputStream, PushbackInputStream}
@@ -12,19 +19,27 @@ import java.util.zip.GZIPOutputStream
 import scala.concurrent.duration.Duration
 import scala.concurrent.{Await, Future}
 import scala.concurrent.ExecutionContext.Implicits.global
+import scala.jdk.CollectionConverters.MapHasAsJava
 
 package object splunk {
   private val logger = LoggerFactory.getLogger(getClass)
 
-  val partitionMetaColumns = List("hdx_db", "hdx_table", "hdx_path", "hdx_schema", "hdx_pushed")
+  val partitionMetaColumns: List[String] = List("hdx_db", "hdx_table", "hdx_path", "hdx_schema", "hdx_pushed")
 
   private val chunkedHeaderR = """^chunked 1.0,(\d+),(\d+)$""".r
   private val tableArgR = """^table\s*=\s*(.*?)\.(.*?)$""".r
+  private val fieldsArgR = """^fields\s*=\s*(.*?)$""".r
 
   def getDbTableArg(meta: ChunkedRequestMetadata): (String, String) = {
     meta.searchInfo.args.collectFirst {
       case tableArgR(db, table) => (db.trim.toLowerCase, table.trim.toLowerCase)
     }.getOrElse(sys.error("Couldn't find table=db.table argument!"))
+  }
+
+  def getFieldsArg(meta: ChunkedRequestMetadata): List[String] = {
+    meta.searchInfo.args.collectFirst {
+      case fieldsArgR(s) => s.split(",\\s*").toList
+    }.getOrElse(Nil)
   }
 
   def readInitialChunk(stdin: InputStream): ChunkedRequestMetadata = {
@@ -111,4 +126,58 @@ package object splunk {
     out.close()
     Base64.getEncoder.encodeToString(baos.toByteArray)
   }
+
+  def tableCatalog(info: HdxConnectionInfo): HdxTableCatalog = {
+    val opts = new CaseInsensitiveStringMap(info.asMap.asJava)
+
+    val catalog = new HdxTableCatalog()
+    catalog.initialize("hydrolix", opts)
+    catalog
+  }
+
+  def hdxTable(cat: HdxTableCatalog, dbName: String, tableName: String): HdxTable = {
+    cat.loadTable(Identifier.of(Array(dbName), tableName)).asInstanceOf[HdxTable]
+  }
+
+  def getRequestedCols(getInfoMeta: ChunkedRequestMetadata, table: HdxTable) = {
+    val requestedFields = getFieldsArg(getInfoMeta)
+
+    if (requestedFields.isEmpty) {
+      table.schema
+    } else {
+      val schemaFields = table.schema.map { field => field.name -> field }.toMap
+      StructType(requestedFields.flatMap { name =>
+        val mf = schemaFields.get(name)
+        if (mf.isEmpty) logger.warn(s"Requested field $name not found in table schema (${table.schema})")
+        mf
+      })
+    }
+  }
+
+  def planPartitions(table: HdxTable,
+                      cols: StructType,
+                  earliest: BigDecimal,
+                    latest: BigDecimal,
+                      info: HdxConnectionInfo)
+                          : List[HdxScanPartition] =
+  {
+    val sb = new HdxScanBuilder(info, table.storage, table)
+    sb.pruneColumns(cols)
+
+    val minTimestamp = DateTimeUtils.microsToInstant((earliest * 1000000).toLong)
+    val maxTimestamp = DateTimeUtils.microsToInstant((latest * 1000000).toLong)
+    logger.info(s"minTimestamp: $minTimestamp")
+    logger.info(s"maxTimestamp: $maxTimestamp")
+
+    sb.pushPredicates(Array(new And(
+      new Predicate(">=", Array(GetField(table.primaryKeyField), Literal(minTimestamp))),
+      new Predicate("<=", Array(GetField(table.primaryKeyField), Literal(maxTimestamp)))
+    )))
+
+    val scan = sb.build()
+    val batch = scan.toBatch
+
+    batch.planInputPartitions().toList.map(_.asInstanceOf[HdxScanPartition])
+  }
+
 }

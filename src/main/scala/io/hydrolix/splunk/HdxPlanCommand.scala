@@ -3,6 +3,7 @@ package io.hydrolix.splunk
 import io.hydrolix.spark.model.JSON
 
 import com.github.tototoshi.csv.CSVWriter
+import org.apache.spark.sql.catalyst.util.DateTimeUtils
 import org.slf4j.LoggerFactory
 
 import java.io.{ByteArrayInputStream, ByteArrayOutputStream}
@@ -39,10 +40,13 @@ object HdxPlanCommand {
 
         val (dbName, tableName) = getDbTableArg(getInfoMeta)
 
+        val minTimestamp = DateTimeUtils.microsToInstant((getInfoMeta.searchInfo.earliestTime * 1000000).toLong)
+        val maxTimestamp = DateTimeUtils.microsToInstant((getInfoMeta.searchInfo.latestTime * 1000000).toLong)
+
         val cat = tableCatalog(info)
         val table = hdxTable(cat, dbName, tableName)
         val cols = getRequestedCols(getInfoMeta, table)
-        val partitions = planPartitions(table, cols, getInfoMeta.searchInfo.earliestTime, getInfoMeta.searchInfo.latestTime, info)
+        val partitions = planPartitions(table, cols, minTimestamp, maxTimestamp, info)
 
         val out = new ByteArrayOutputStream(16384)
         val writer = CSVWriter.open(out)

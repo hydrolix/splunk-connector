@@ -6,19 +6,19 @@ import io.hydrolix.spark.model.{HdxConnectionInfo, JSON}
 import com.google.common.io.ByteStreams
 import com.google.common.primitives.Bytes
 import org.apache.spark.sql.HdxPushdown.{GetField, Literal}
-import org.apache.spark.sql.catalyst.util.DateTimeUtils
 import org.apache.spark.sql.connector.catalog.Identifier
 import org.apache.spark.sql.connector.expressions.filter.{And, Predicate}
-import org.apache.spark.sql.types.{StructField, StructType}
+import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.util.CaseInsensitiveStringMap
 import org.slf4j.LoggerFactory
 
 import java.io.{ByteArrayOutputStream, InputStream, ObjectOutputStream, OutputStream, PushbackInputStream}
+import java.time.Instant
 import java.util.Base64
 import java.util.zip.GZIPOutputStream
+import scala.concurrent.ExecutionContext.Implicits.global
 import scala.concurrent.duration.Duration
 import scala.concurrent.{Await, Future}
-import scala.concurrent.ExecutionContext.Implicits.global
 import scala.jdk.CollectionConverters.MapHasAsJava
 
 package object splunk {
@@ -36,7 +36,7 @@ package object splunk {
     }.getOrElse(sys.error("Couldn't find table=db.table argument!"))
   }
 
-  def getFieldsArg(meta: ChunkedRequestMetadata): List[String] = {
+  private def getFieldsArg(meta: ChunkedRequestMetadata): List[String] = {
     meta.searchInfo.args.collectFirst {
       case fieldsArgR(s) => s.split(",\\s*").toList
     }.getOrElse(Nil)
@@ -139,7 +139,7 @@ package object splunk {
     cat.loadTable(Identifier.of(Array(dbName), tableName)).asInstanceOf[HdxTable]
   }
 
-  def getRequestedCols(getInfoMeta: ChunkedRequestMetadata, table: HdxTable) = {
+  def getRequestedCols(getInfoMeta: ChunkedRequestMetadata, table: HdxTable): StructType = {
     val requestedFields = getFieldsArg(getInfoMeta)
 
     if (requestedFields.isEmpty) {
@@ -156,16 +156,14 @@ package object splunk {
 
   def planPartitions(table: HdxTable,
                       cols: StructType,
-                  earliest: BigDecimal,
-                    latest: BigDecimal,
+              minTimestamp: Instant,
+              maxTimestamp: Instant,
                       info: HdxConnectionInfo)
                           : List[HdxScanPartition] =
   {
     val sb = new HdxScanBuilder(info, table.storage, table)
     sb.pruneColumns(cols)
 
-    val minTimestamp = DateTimeUtils.microsToInstant((earliest * 1000000).toLong)
-    val maxTimestamp = DateTimeUtils.microsToInstant((latest * 1000000).toLong)
     logger.info(s"minTimestamp: $minTimestamp")
     logger.info(s"maxTimestamp: $maxTimestamp")
 

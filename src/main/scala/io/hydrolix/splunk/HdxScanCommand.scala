@@ -1,6 +1,6 @@
 package io.hydrolix.splunk
 
-import io.hydrolix.spark.connector.{HdxPartitionReader, HdxTable}
+import io.hydrolix.spark.connector.HdxPartitionReader
 import io.hydrolix.spark.model.JSON
 
 import com.github.tototoshi.csv.CSVWriter
@@ -49,7 +49,10 @@ object HdxScanCommand {
         val cols = getRequestedCols(getInfoMeta, table)
         logger.info(s"SCAN requested columns: $cols")
 
-        val partitions = planPartitions(table, cols, getInfoMeta.searchInfo.earliestTime, getInfoMeta.searchInfo.latestTime, info)
+        val minTimestamp = DateTimeUtils.microsToInstant((getInfoMeta.searchInfo.earliestTime * 1000000).toLong)
+        val maxTimestamp = DateTimeUtils.microsToInstant((getInfoMeta.searchInfo.latestTime * 1000000).toLong)
+
+        val partitions = planPartitions(table, cols, minTimestamp, maxTimestamp, info)
 
         // TODO do output in 50k chunks over multiple iterations, not just a single spew
         // TODO do output in 50k chunks over multiple iterations, not just a single spew
@@ -61,14 +64,26 @@ object HdxScanCommand {
         val writer = CSVWriter.open(new FileOutputStream(tmp))
         writer.writeRow(cols.map(_.name))
 
+        var count = 0
+        var written = 0
         for (partition <- partitions) {
+          val timestampPos = partition.schema.fieldIndex(table.primaryKeyField)
+
           val pr = new HdxPartitionReader(info, table.storage, table.primaryKeyField, partition)
           while (pr.next()) {
-            val rec = pr.get()
-            writer.writeRow(rowToCsv(cols, rec))
+            val row = pr.get()
+            count += 1
+            val timestamp = DateTimeUtils.microsToInstant(row.getLong(timestampPos))
+            if (timestamp.compareTo(minTimestamp) >= 0 && timestamp.compareTo(maxTimestamp) <= 0) {
+              written += 1
+              writer.writeRow(rowToCsv(cols, row))
+            }
           }
           pr.close()
         }
+
+        logger.info(s"SCAN scanned $count records; written $written within time bounds (${count - written} filtered out)")
+
         writer.close()
         val dataLen = tmp.length()
         val execResp = ExecuteResponseMeta(true)

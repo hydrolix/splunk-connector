@@ -5,21 +5,21 @@ import io.hydrolix.spark.model.{HdxConnectionInfo, JSON}
 
 import com.google.common.io.ByteStreams
 import com.google.common.primitives.Bytes
-import org.apache.spark.sql.HdxPushdown.{GetField, Literal}
 import org.apache.spark.sql.connector.catalog.Identifier
-import org.apache.spark.sql.connector.expressions.filter.{And, Predicate}
+import org.apache.spark.sql.connector.expressions.filter.Predicate
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.util.CaseInsensitiveStringMap
 import org.slf4j.LoggerFactory
 
-import java.io.{ByteArrayOutputStream, InputStream, ObjectOutputStream, OutputStream, PushbackInputStream}
+import java.io.{ByteArrayInputStream, ByteArrayOutputStream, InputStream, ObjectInputStream, ObjectOutputStream, OutputStream, PushbackInputStream}
 import java.time.Instant
 import java.util.Base64
-import java.util.zip.GZIPOutputStream
+import java.util.zip.{GZIPInputStream, GZIPOutputStream}
 import scala.concurrent.ExecutionContext.Implicits.global
 import scala.concurrent.duration.Duration
 import scala.concurrent.{Await, Future}
 import scala.jdk.CollectionConverters.MapHasAsJava
+import scala.util.Using
 
 package object splunk {
   private val logger = LoggerFactory.getLogger(getClass)
@@ -119,19 +119,40 @@ package object splunk {
   }
 
   def serialize(obj: Serializable): Array[Byte] = {
-    val baos = new ByteArrayOutputStream(8192)
-    val out = new ObjectOutputStream(baos)
-    out.writeObject(obj)
-    out.close()
-    baos.toByteArray
+    Using.Manager { use =>
+      val baos = use(new ByteArrayOutputStream(8192))
+      val out = use(new ObjectOutputStream(baos))
+      out.writeObject(obj)
+      out.close()
+      baos.toByteArray
+    }.get
   }
 
   def compress(bytes: Array[Byte]): String = {
-    val baos = new ByteArrayOutputStream(8192)
-    val out = new GZIPOutputStream(baos)
-    out.write(bytes)
-    out.close()
-    Base64.getEncoder.encodeToString(baos.toByteArray)
+    Using.Manager { use =>
+      val baos = use(new ByteArrayOutputStream(8192))
+      val out = use(new GZIPOutputStream(baos))
+
+      out.write(bytes)
+      out.close()
+      Base64.getEncoder.encodeToString(baos.toByteArray)
+    }.get
+  }
+
+  def decompress(base64: String): Array[Byte] = {
+    Using.Manager { use =>
+      val bais = use(new ByteArrayInputStream(Base64.getDecoder.decode(base64)))
+      val is = use(new GZIPInputStream(bais))
+      ByteStreams.toByteArray(is)
+    }.get
+  }
+
+  def deserialize[A <: Serializable](bytes: Array[Byte]): A = {
+    Using.Manager { use =>
+      val bais = use(new ByteArrayInputStream(bytes))
+      val ois = use(new ObjectInputStream(bais))
+      ois.readObject().asInstanceOf[A]
+    }.get
   }
 
   def tableCatalog(info: HdxConnectionInfo): HdxTableCatalog = {
@@ -168,7 +189,7 @@ package object splunk {
                       cols: StructType,
               minTimestamp: Instant,
               maxTimestamp: Instant,
-                otherTerms: Map[String, String],
+                predicates: List[Predicate],
                       info: HdxConnectionInfo)
                           : List[HdxScanPartition] =
   {
@@ -178,12 +199,7 @@ package object splunk {
     logger.info(s"minTimestamp: $minTimestamp")
     logger.info(s"maxTimestamp: $maxTimestamp")
 
-    sb.pushPredicates(Array(new And(
-      new Predicate(">=", Array(GetField(table.primaryKeyField), Literal(minTimestamp))),
-      new Predicate("<=", Array(GetField(table.primaryKeyField), Literal(maxTimestamp))),
-    )) ++ otherTerms.map {
-      case (k, v) => new Predicate("=", Array(GetField(k), Literal(v)))
-    })
+    sb.pushPredicates(predicates.toArray)
 
     val scan = sb.build()
     val batch = scan.toBatch

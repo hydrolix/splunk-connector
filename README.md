@@ -79,49 +79,16 @@ curl -k -u admin:REDACTED \
 Select the `hydrolix` app, make sure a narrow time range is selected in the time picker, and run an SPL search like the 
 following:
 ```
-| hdxscan table=hydro.logs fields="timestamp,level" message="Found storage." 
+| hdxquery table=hydro.logs fields="timestamp,level" message="Found storage." 
 ```
 
 This SPL search has the following components:
-* `| hdxscan` invokes the custom command rather than the built-in implicit `| search` command
-* Everything else is an argument passed to the `hdxscan` command:
+* `| hdxquery` invokes the custom command rather than the built-in implicit `| search` command
+* Everything else is an argument passed to the `hdxquery` command:
   * `table=hydro.logs` tells us which table to search
   * `fields="timestamp,level"` tells us which fields to return
   * `message="Found storage."` (any other name=value pair other than `table=` or `fields=`) adds an equality 
      predicate to the query. The predicate must refer to a String-typed field, or you'll get an error.
 
-## Limitations & Future Plans
-Currently, the `hdxscan` command will EITHER:
-* Only run on the Splunk search head, severely limiting performance
-* Run on multiple indexers, each returning the same duplicate results
-
-This is because of Splunk's limited and idiosyncratic implementation of Map-Reduce, in which:
-
-* in a search like `|foo |bar |baz`, where `foo` is an "eventing" command and `bar` is a "reporting" command:
-  * `foo` will run in parallel on indexers
-  * `bar` must run on the search head, because it needs to see the entire result set to finalize aggregations
-  * `baz` must ALSO run on the search head, even if `baz` is also an "eventing" command.
-
-We would prefer to run searches like this:
-` | hdxplan table=hydro.logs shardKey="abc123" | hdxscan fields="timestamp,level"`, in which:
-1. the `hdxplan` command runs once, and:
-    * loads configuration 
-    * enumerates the partitions that should be scanned
-    * emits partition metadata "events" describing which partitions need to be scanned
-    * doesn't read any actual data
-2. the `hdxscan` command runs in parallel, and:
-    * consumes the partition metadata "events" that were produced by `hdxplan`
-    * executes `turbine_cmd hdx_reader ...` commands to read the actual data
-    * emits the actual data as CSV
-
-If our suspicions are correct, and Splunk can't support this one-to-many style orchestration, we have an idea for how 
-multiple `hdxscan` instances running in parallel could coordinate their workload and avoid producing duplicates, using 
-Zookeeper or equivalent system that supports distributed atomic writes:
-* on startup, every instance attempts to atomically create a root node for the currently executing search
-* only one of the instances will succeed, all the rest switch to polling until the planning is done
-* on the instance that succeeds in creating the root node:
-  * read configuration, enumerate partitions, do partition pruning
-  * write a record in zookeeper for each partition that needs to be scanned
-  * unlock the plan and transition to scan mode
-* on every instance, including the one that was temporarily the planner:
-  * 
+## How it Works
+lol. lmao.

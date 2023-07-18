@@ -33,7 +33,7 @@ class ReadChunkTest {
       "http://localhost:8000",
       "1.2.3",
       "|foo",
-      "hdxscan",
+      "hdxquery",
       -1,
       Instant.EPOCH.getEpochSecond.toInt,
       Instant.EPOCH.getEpochSecond.toInt

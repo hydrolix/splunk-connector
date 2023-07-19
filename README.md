@@ -44,7 +44,8 @@ $ cat kv.json
   "username": "alex@hydrolix.io",
   "password": "REDACTED",
   "cloud_cred_1": "H4sIAAAREDACTED",
-  "cloud_cred_2": null
+  "cloud_cred_2": null,
+  "zookeeper_servers": ["localhost:2181"]    
 }
 ```
 
@@ -70,7 +71,8 @@ curl -k -u admin:REDACTED \
   "username": "alex@hydrolix.io",
   "password": "REDACTED",
   "cloud_cred_1": "H4sIAAAREDACTED",
-  "cloud_cred_2": null
+  "cloud_cred_2": null,
+  "zookeeper_servers": ["localhost:2181"]  
 }
 ```
 
@@ -92,3 +94,8 @@ This SPL search has the following components:
 
 ## How it Works
 lol. lmao.
+
+### Loading stuff from KVstore into search
+```
+| makeresults |eval _key="default" |lookup hdx_config _key
+```

@@ -19,7 +19,7 @@ import java.net.URI
 import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
 import java.util.UUID
-import java.util.concurrent.Executors
+import java.util.concurrent.CountDownLatch
 import scala.collection.mutable
 import scala.collection.mutable.ListBuffer
 import scala.jdk.CollectionConverters._
@@ -79,7 +79,8 @@ object HdxQueryCommand {
         val ll = new LeaderLatch(curatorClient, s"/search/${getInfoMeta.searchInfo.sid}/planner", nodeId.toString)
         ll.start()
 
-        // TODO make sure this command's main thread waits for the callback to finish
+        // Make sure this command's main thread waits for either callback to finish
+        val latch = new CountDownLatch(1)
 
         ll.addListener(new LeaderLatchListener {
           override def isLeader(): Unit = {
@@ -155,7 +156,19 @@ object HdxQueryCommand {
               )
             }
 
-            // TODO transition to worker mode
+            // Transition to worker mode
+
+            logger.info(s"SCAN PLANNER: $nodeId transitioning to worker")
+
+            val scanJob = retry(
+              logger, s"SCAN WORKER: $nodeId waiting for scan job",
+              MaxScanAttempts, ScanAttemptWait,
+              Config.readScanJob(splunkdUri, "Splunk", getInfoMeta.searchInfo.sessionKey, getInfoMeta.searchInfo.sid, nodeId)
+            ).getOrElse(sys.error("Couldn't get scan job"))
+
+            scan(nodeId, info, plan, scanJob.partitionPaths)
+
+            latch.countDown()
           }
 
           override def notLeader(): Unit = {
@@ -174,8 +187,12 @@ object HdxQueryCommand {
             ).getOrElse(sys.error("Couldn't get scan job"))
 
             scan(nodeId, info, plan, scanJob.partitionPaths)
+
+            latch.countDown()
           }
-        }, Executors.newSingleThreadExecutor())
+        })
+
+        latch.await()
     }
   }
 
@@ -188,6 +205,7 @@ object HdxQueryCommand {
         case None if count <= maxRetries =>
           logger.info(s"$what attempt #$count/$maxRetries")
           Thread.sleep(delay)
+        case None => return None
       }
     }
     None

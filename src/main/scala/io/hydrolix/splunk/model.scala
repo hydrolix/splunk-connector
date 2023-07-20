@@ -9,6 +9,7 @@ import org.apache.spark.sql.types.StructType
 
 import java.net.URI
 import java.time.Instant
+import java.util
 import java.util.UUID
 
 @JsonNaming(classOf[SnakeCaseStrategy])
@@ -53,6 +54,21 @@ case class InspectorMessages(messages: List[(String, String)])
 @JsonNaming(classOf[SnakeCaseStrategy])
 case class ExecuteResponseMeta(finished: Boolean)
 
+sealed trait KVStoreAccess {
+  val uri: URI
+  def authHeaderValue: String
+}
+
+case class KVStorePassword(uri: URI, login: String, password: String) extends KVStoreAccess {
+  override def authHeaderValue: String = {
+    val cred = util.Base64.getEncoder.encodeToString(s"$login:$password".getBytes("UTF-8"))
+    s"Basic $cred"
+  }
+}
+
+case class KVStoreSessionKey(uri: URI, sessionKey: String) extends KVStoreAccess {
+  override def authHeaderValue: String = s"Splunk $sessionKey"
+}
 
 /** JSON object for KVstore version of HdxConnectionInfo */
 @JsonNaming(classOf[SnakeCaseStrategy])

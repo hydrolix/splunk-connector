@@ -32,9 +32,20 @@ object HdxQueryCommand {
   private val MaxScanAttempts = 10
   private val ScanAttemptWait = 1000
 
+  private val remoteSidR = """^remote_.*?_([\d.]+)$""".r
+  private val cleanSidR = """^([\d.]+)$""".r
+
   def main(args: Array[String]): Unit = {
     val getInfoMeta = readInitialChunk(System.in)
-    logger.info(s"SCAN INIT: getinfo metadata: $getInfoMeta")
+    logger.info(s"INIT: getinfo metadata: $getInfoMeta")
+
+    val kvStoreAccess = if (args.length >= 3) {
+      logger.info("INIT: Accessing KVStore with basic auth")
+      KVStorePassword(new URI(args(0)), args(1), args(2))
+    } else {
+      logger.info("INIT: Accessing KVStore with session key")
+      KVStoreSessionKey(new URI(getInfoMeta.searchInfo.splunkdUri), getInfoMeta.searchInfo.sessionKey)
+    }
 
     val resp = GetInfoResponseMeta(
       CommandType.streaming,
@@ -52,17 +63,18 @@ object HdxQueryCommand {
     readChunk(System.in) match {
       case (None, _) => sys.exit(0)
       case (Some(execMeta), execData) =>
-        val splunkdUri = new URI(getInfoMeta.searchInfo.splunkdUri)
-
-        val hc = Config.loadWithSessionKey(splunkdUri, getInfoMeta.searchInfo.sessionKey)
-        logger.info(s"SCAN INIT: config loaded: ${hc.toString}")
+        val hc = Config.load(kvStoreAccess)
 
         val nodeId = UUID.randomUUID()
+
+        logger.info(s"INIT-$nodeId: config loaded: ${hc.toString}")
 
         val curatorClient = CuratorFrameworkFactory.newClient(
           hc.zookeeperServers.mkString(","),
           new ExponentialBackoffRetry(500, 10) // TODO make the retry settings configurable
         )
+
+        curatorClient.start()
 
         val info = HdxConnectionInfo(
           hc.jdbcUrl,
@@ -76,15 +88,23 @@ object HdxQueryCommand {
 
         val now = System.currentTimeMillis()
 
-        val ll = new LeaderLatch(curatorClient, s"/search/${getInfoMeta.searchInfo.sid}/planner", nodeId.toString)
+        val sid = getInfoMeta.searchInfo.sid match {
+          case remoteSidR(s) => s
+          case cleanSidR(s) => s
+          case other => sys.error(s"Couldn't parse clean sid from $other")
+        }
+
+        val ll = new LeaderLatch(curatorClient, s"/search/$sid/planner", nodeId.toString)
+        logger.info(s"INIT-$nodeId: Starting LeaderLatch")
         ll.start()
+        logger.info(s"INIT-$nodeId: LeaderLatch started")
 
         // Make sure this command's main thread waits for either callback to finish
         val latch = new CountDownLatch(1)
 
         ll.addListener(new LeaderLatchListener {
           override def isLeader(): Unit = {
-            logger.info(s"SCAN PLANNER: $nodeId is the planner")
+            logger.info(s"PLANNER-$nodeId: I'm the planner")
 
             val (plan, partitionPaths) = {
               val (dbName, tableName) = getDbTableArg(getInfoMeta)
@@ -94,7 +114,7 @@ object HdxQueryCommand {
               val table = hdxTable(cat, dbName, tableName)
 
               val cols = getRequestedCols(getInfoMeta, table)
-              logger.info(s"SCAN PLANNER: requested columns: $cols")
+              logger.info(s"PLANNER-$nodeId: Requested columns: $cols")
 
               val minTimestamp = DateTimeUtils.microsToInstant((getInfoMeta.searchInfo.earliestTime * 1000000).toLong)
               val maxTimestamp = DateTimeUtils.microsToInstant((getInfoMeta.searchInfo.latestTime * 1000000).toLong)
@@ -114,7 +134,7 @@ object HdxQueryCommand {
 
               (
                 QueryPlan(
-                  getInfoMeta.searchInfo.sid,
+                  sid,
                   None,
                   now,
                   nodeId,
@@ -133,10 +153,11 @@ object HdxQueryCommand {
               )
             }
 
-            Config.writePlan(splunkdUri, "Splunk", getInfoMeta.searchInfo.sessionKey, plan)
+            Config.writePlan(kvStoreAccess, plan)
 
             val workers = ll.getParticipants.asScala.toVector
             val numWorkers = workers.size
+            logger.info(s"PLANNER-$nodeId: Assigning ${partitionPaths.size} partitions to $numWorkers workers")
             val partitionsPerWorker = mutable.Map[String, mutable.ListBuffer[String]]().withDefaultValue(ListBuffer())
 
             // Allocate every partition that needs to be scanned to one of the workers
@@ -147,23 +168,21 @@ object HdxQueryCommand {
 
             // Write out the per-worker partition lists under the worker IDs
             for ((workerId, partitions) <- partitionsPerWorker) {
-              logger.info(s"SCAN PLANNER: Worker $workerId should scan ${partitions.size} partitions")
+              logger.info(s"PLANNER-$nodeId: Worker $workerId should scan ${partitions.size} partitions")
               Config.writeScanJob(
-                splunkdUri,
-                "Splunk",
-                getInfoMeta.searchInfo.sessionKey,
-                ScanJob(s"${getInfoMeta.searchInfo.sid}_$workerId", None, now, getInfoMeta.searchInfo.sid, UUID.fromString(workerId), partitions.toList)
+                kvStoreAccess,
+                ScanJob(s"${sid}_$workerId", None, now, sid, UUID.fromString(workerId), partitions.toList)
               )
             }
 
             // Transition to worker mode
 
-            logger.info(s"SCAN PLANNER: $nodeId transitioning to worker")
+            logger.info(s"PLANNER-$nodeId: I'm a worker now")
 
             val scanJob = retry(
-              logger, s"SCAN WORKER: $nodeId waiting for scan job",
+              logger, s"WORKER-$nodeId: Waiting for scan job",
               MaxScanAttempts, ScanAttemptWait,
-              Config.readScanJob(splunkdUri, "Splunk", getInfoMeta.searchInfo.sessionKey, getInfoMeta.searchInfo.sid, nodeId)
+              Config.readScanJob(kvStoreAccess, sid, nodeId)
             ).getOrElse(sys.error("Couldn't get scan job"))
 
             scan(nodeId, info, plan, scanJob.partitionPaths)
@@ -172,18 +191,18 @@ object HdxQueryCommand {
           }
 
           override def notLeader(): Unit = {
-            logger.info(s"SCAN WORKER: $nodeId is a worker")
+            logger.info(s"WORKER-$nodeId: I'm a worker")
 
             val plan = retry(
-              logger, s"SCAN WORKER: $nodeId waiting for query plan",
+              logger, s"WORKER-$nodeId: Waiting for query plan",
               MaxPlanAttempts, PlanAttemptWait,
-              Config.readPlan(splunkdUri, "Splunk", getInfoMeta.searchInfo.sessionKey, getInfoMeta.searchInfo.sid)
+              Config.readPlan(kvStoreAccess, sid)
             ).getOrElse(sys.error("Couldn't get query plan"))
 
             val scanJob = retry(
-              logger, s"SCAN WORKER: $nodeId waiting for scan job",
+              logger, s"WORKER-$nodeId: Waiting for scan job",
               MaxScanAttempts, ScanAttemptWait,
-              Config.readScanJob(splunkdUri, "Splunk", getInfoMeta.searchInfo.sessionKey, getInfoMeta.searchInfo.sid, nodeId)
+              Config.readScanJob(kvStoreAccess, sid, nodeId)
             ).getOrElse(sys.error("Couldn't get scan job"))
 
             scan(nodeId, info, plan, scanJob.partitionPaths)
@@ -269,7 +288,7 @@ object HdxQueryCommand {
       pr.close()
     }
 
-    logger.info(s"SCAN worker $workerId scanned $count records; written $written (${count - written} filtered out)")
+    logger.info(s"WORKER-$workerId: Scanned $count records; written $written (${count - written} filtered out)")
 
     writer.close()
     val dataLen = tmp.length()

@@ -54,7 +54,7 @@ $ cat kv.json
 $ curl -k -u admin:REDACTED \
     -H "Content-Type: application/json" \
     -X POST \
-    https://localhost:8089/servicesNS/nobody/hydrolix/storage/collections/data/hdx_config/default \
+    https://localhost:/servicesNS/nobody/hydrolix/storage/collections/data/hdx_config/default \
     --data-binary @kv.json 
 ```
 

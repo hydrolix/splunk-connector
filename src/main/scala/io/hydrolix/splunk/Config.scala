@@ -2,15 +2,19 @@ package io.hydrolix.splunk
 
 import io.hydrolix.spark.model.JSON
 
+import org.slf4j.LoggerFactory
+
+import java.net.Socket
 import java.net.http.HttpRequest.BodyPublishers
 import java.net.http.HttpResponse.BodyHandlers
 import java.net.http.{HttpClient, HttpRequest}
-import java.net.{Socket, URI}
 import java.security.cert.X509Certificate
-import java.util.{Base64, UUID}
+import java.util.UUID
 import javax.net.ssl.{SSLContext, SSLEngine, X509ExtendedTrustManager}
 
 object Config {
+  private val logger = LoggerFactory.getLogger(getClass)
+
   private val ctx = SSLContext.getInstance("TLS")
   // TODO make this optional!
   // TODO make this optional!
@@ -24,20 +28,12 @@ object Config {
     .sslContext(ctx)
     .build()
 
-  def loadWithUserPass(baseUrl: URI, user: String, pass: String): HdxConfig = {
-    val userPass = Base64.getEncoder.encodeToString(s"$user:$pass".getBytes("UTF-8"))
-    load(baseUrl, "Basic", userPass)
-  }
-
-  def loadWithSessionKey(baseUrl: URI, sessionKey: String): HdxConfig = {
-    load(baseUrl, "Splunk", sessionKey)
-  }
-
-  private def load(baseUrl: URI, realm: String, cred: String): HdxConfig = {
+  def load(access: KVStoreAccess): HdxConfig = {
     // TODO maybe load other configs not named `default`?
     val getConfigs = HttpRequest
-      .newBuilder(baseUrl.resolve("/servicesNS/nobody/hydrolix/storage/collections/data/hdx_config/default"))
-      .setHeader("Authorization", s"$realm $cred")
+      .newBuilder(access.uri.resolve("/servicesNS/nobody/hydrolix/storage/collections/data/hdx_config/default"))
+      .GET()
+      .setHeader("Authorization", access.authHeaderValue)
       .build()
 
     val resp = client.send(getConfigs, BodyHandlers.ofString())
@@ -48,19 +44,24 @@ object Config {
   // TODO we're assuming `sid` is globally unique across any number of search heads, that's probably not safe
   // TODO we're assuming `sid` is globally unique across any number of search heads, that's probably not safe
   // TODO we're assuming `sid` is globally unique across any number of search heads, that's probably not safe
-  def writePlan(baseUrl: URI, realm: String, cred: String, plan: QueryPlan): Unit = {
-    val postPlan = HttpRequest.newBuilder(baseUrl.resolve("/servicesNS/nobody/hydrolix/storage/collections/data/hdx_plans/"))
+  def writePlan(access: KVStoreAccess, plan: QueryPlan): Unit = {
+    val postPlan = HttpRequest
+      .newBuilder(access.uri.resolve("/servicesNS/nobody/hydrolix/storage/collections/data/hdx_plans/"))
       .POST(BodyPublishers.ofString(JSON.objectMapper.writeValueAsString(plan)))
-      .setHeader("Authorization", s"$realm $cred")
+      .setHeader("Authorization", access.authHeaderValue)
+      .setHeader("Content-Type", "application/json")
       .build()
 
-    client.send(postPlan, BodyHandlers.discarding())
+    val resp = client.send(postPlan, BodyHandlers.ofString())
+
+    if (!Set(200, 201).contains(resp.statusCode())) sys.error(s"writePlan failed with status ${resp.statusCode()}; body was ${resp.body()}")
   }
 
-  def readPlan(baseUrl: URI, realm: String, cred: String, sid: String): Option[QueryPlan] = {
-    val getPlan = HttpRequest.newBuilder(baseUrl.resolve(s"/servicesNS/nobody/hydrolix/storage/collections/data/hdx_plans/$sid"))
+  def readPlan(access: KVStoreAccess, sid: String): Option[QueryPlan] = {
+    val getPlan = HttpRequest
+      .newBuilder(access.uri.resolve(s"/servicesNS/nobody/hydrolix/storage/collections/data/hdx_plans/$sid"))
       .GET()
-      .setHeader("Authorization", s"$realm $cred")
+      .setHeader("Authorization", access.authHeaderValue)
       .build()
 
     val resp = client.send(getPlan, BodyHandlers.ofString())
@@ -70,14 +71,28 @@ object Config {
       case 404 =>
         None
       case other =>
-        sys.error(s"GET query plan resulted in status $other")
+        sys.error(s"GET query plan resulted in status $other; body was ${resp.body()}")
     }
   }
 
-  def readScanJob(baseUrl: URI, realm: String, cred: String, sid: String, workerId: UUID): Option[ScanJob] = {
-    val getScanJob = HttpRequest.newBuilder(baseUrl.resolve(s"/servicesNS/nobody/hydrolix/storage/collections/data/hdx_scan_jobs/${sid}_$workerId"))
+  def writeScanJob(access: KVStoreAccess, job: ScanJob): Unit = {
+    val postScan = HttpRequest
+      .newBuilder(access.uri.resolve(s"/servicesNS/nobody/hydrolix/storage/collections/data/hdx_scan_jobs/${job.sid}_${job.workerId}"))
+      .POST(BodyPublishers.ofString(JSON.objectMapper.writeValueAsString(job)))
+      .setHeader("Authorization", access.authHeaderValue)
+      .setHeader("Content-Type", "application/json")
+      .build()
+
+    val resp = client.send(postScan, BodyHandlers.ofString())
+
+    if (!Set(200, 201).contains(resp.statusCode())) sys.error(s"writeScanJob failed with status ${resp.statusCode()}; body was ${resp.body()}")
+  }
+
+  def readScanJob(access: KVStoreAccess, sid: String, workerId: UUID): Option[ScanJob] = {
+    val getScanJob = HttpRequest
+      .newBuilder(access.uri.resolve(s"/servicesNS/nobody/hydrolix/storage/collections/data/hdx_scan_jobs/${sid}_$workerId"))
       .GET()
-      .setHeader("Authorization", s"$realm $cred")
+      .setHeader("Authorization", access.authHeaderValue)
       .build()
 
     val resp = client.send(getScanJob, BodyHandlers.ofString())
@@ -87,17 +102,8 @@ object Config {
       case 404 =>
         None
       case other =>
-        sys.error(s"GET scan job resulted in status $other")
+        sys.error(s"GET scan job resulted in status $other; body was ${resp.body()}")
     }
-  }
-
-  def writeScanJob(baseUrl: URI, realm: String, cred: String, job: ScanJob): Unit = {
-    val postScan = HttpRequest.newBuilder(baseUrl.resolve(s"/servicesNS/nobody/hydrolix/storage/collections/data/hdx_scan_jobs/${job.sid}_${job.workerId}"))
-      .POST(BodyPublishers.ofString(JSON.objectMapper.writeValueAsString(job)))
-      .setHeader("Authorization", s"$realm $cred")
-      .build()
-
-    client.send(postScan, BodyHandlers.discarding())
   }
 }
 

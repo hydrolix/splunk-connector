@@ -1,6 +1,6 @@
 package io.hydrolix.splunk
 
-import io.hydrolix.spark.model.{HdxStorageSettings, HdxValueType}
+import io.hydrolix.spark.model.{HdxConnectionInfo, HdxStorageSettings, HdxValueType}
 
 import com.fasterxml.jackson.annotation.JsonProperty
 import com.fasterxml.jackson.databind.PropertyNamingStrategies.SnakeCaseStrategy
@@ -82,10 +82,38 @@ case class HdxConfig(
   @JsonProperty("cloud_cred_1") cloudCred1: String,
   @JsonProperty("cloud_cred_2") cloudCred2: Option[String],
                           zookeeperServers: List[String]
-)
+) {
+  val connectionInfo =
+    HdxConnectionInfo(
+      jdbcUrl,
+      username,
+      password,
+      apiUrl,
+      None,
+      cloudCred1,
+      cloudCred2
+    )
+}
 
 /**
  * TODO set up a saved search to delete old plans
+ *
+ * @param sid             the Splunk search ID, cleaned so `remote_<host.name>_<timestamp>` leaves just the timestamp
+ * @param user            the user who owns this record; will be set by Splunk
+ * @param timestamp       system time (in millis) on the planner when this plan was created; can be used for future garbage
+ *                        collection
+ * @param plannerId       ID of the node that had planner responsibility for this query
+ * @param workerIds       IDs of the nodes that the planner assigned at least one scan job to for this query
+ * @param db              name of the Hydrolix database
+ * @param table           name of the Hydrolix table
+ * @param primaryKeyField name of the primary timestamp field in the Hydrolix table
+ * @param primaryKeyType  value type of the primary timestamp field in the Hydrolix table
+ * @param cols            Spark struct of the columns this query will need to read
+ * @param storage         Hydrolix storage metadata for accessing cloud storage
+ * @param minTimestamp    lower time bound for this query
+ * @param maxTimestamp    upper time bound for this query
+ * @param otherTerms      Map[fieldName, value] of additional search terms for this query. Always equality, always AND.
+ * @param predicatesBlob  base64(gzip(serialize(_))) of predicates that were pushed down
  */
 @JsonNaming(classOf[SnakeCaseStrategy])
 case class QueryPlan(
@@ -93,6 +121,7 @@ case class QueryPlan(
   @JsonProperty("_user") user: Option[String],
                     timestamp: Long,
                     plannerId: UUID,
+                    workerIds: List[UUID],
                            db: String,
                         table: String,
               primaryKeyField: String,
@@ -111,5 +140,6 @@ case class ScanJob(
   @JsonProperty("_user") user: Option[String],
                     timestamp: Long,
                           sid: String,
-                     workerId: UUID,
+             assignedWorkerId: UUID,
+                      claimed: Boolean,
                partitionPaths: List[String])

@@ -28,10 +28,9 @@ object Config {
     .sslContext(ctx)
     .build()
 
-  def load(access: KVStoreAccess): HdxConfig = {
-    // TODO maybe load other configs not named `default`?
+  def load(access: KVStoreAccess, configName: String): HdxConfig = {
     val getConfigs = HttpRequest
-      .newBuilder(access.uri.resolve("/servicesNS/nobody/hydrolix/storage/collections/data/hdx_config/default"))
+      .newBuilder(access.uri.resolve(s"/servicesNS/nobody/hydrolix/storage/collections/data/hdx_config/$configName"))
       .GET()
       .setHeader("Authorization", access.authHeaderValue)
       .build()
@@ -77,7 +76,7 @@ object Config {
 
   def writeScanJob(access: KVStoreAccess, job: ScanJob): Unit = {
     val postScan = HttpRequest
-      .newBuilder(access.uri.resolve(s"/servicesNS/nobody/hydrolix/storage/collections/data/hdx_scan_jobs/${job.sid}_${job.workerId}"))
+      .newBuilder(access.uri.resolve(s"/servicesNS/nobody/hydrolix/storage/collections/data/hdx_scan_jobs/${job.sid}_${job.assignedWorkerId}"))
       .POST(BodyPublishers.ofString(JSON.objectMapper.writeValueAsString(job)))
       .setHeader("Authorization", access.authHeaderValue)
       .setHeader("Content-Type", "application/json")

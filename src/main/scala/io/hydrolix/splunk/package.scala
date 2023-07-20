@@ -12,9 +12,9 @@ import org.apache.spark.sql.util.CaseInsensitiveStringMap
 import org.slf4j.LoggerFactory
 
 import java.io.{ByteArrayInputStream, ByteArrayOutputStream, InputStream, ObjectInputStream, ObjectOutputStream, OutputStream, PushbackInputStream}
-import java.time.Instant
 import java.util.Base64
 import java.util.zip.{GZIPInputStream, GZIPOutputStream}
+import scala.collection.mutable
 import scala.concurrent.ExecutionContext.Implicits.global
 import scala.concurrent.duration.Duration
 import scala.concurrent.{Await, Future}
@@ -24,29 +24,27 @@ import scala.util.Using
 package object splunk {
   private val logger = LoggerFactory.getLogger(getClass)
 
-  val partitionMetaColumns: List[String] = List("hdx_db", "hdx_table", "hdx_path", "hdx_schema", "hdx_pushed")
-
   private val chunkedHeaderR = """^chunked 1.0,(\d+),(\d+)$""".r
   private val tableArgR = """^table\s*=\s*(.*?)\.(.*?)$""".r
   private val fieldsArgR = """^fields\s*=\s*(.*?)$""".r
   private val otherArgR = """^(.*?)\s*=\s*(.*?)$""".r
 
-  def getDbTableArg(meta: ChunkedRequestMetadata): (String, String) = {
-    meta.searchInfo.args.collectFirst {
+  def getDbTableArg(args: List[String]): (String, String) = {
+    args.collectFirst {
       case tableArgR(db, table) => (db.trim.toLowerCase, table.trim.toLowerCase)
     }.getOrElse(sys.error("Couldn't find table=db.table argument!"))
   }
 
-  private def getFieldsArg(meta: ChunkedRequestMetadata): List[String] = {
-    meta.searchInfo.args.collectFirst {
+  private def getFieldsArg(args: List[String]): List[String] = {
+    args.collectFirst {
       case fieldsArgR(s) => s.split(",\\s*").toList
     }.getOrElse(Nil)
   }
 
-  def getOtherTerms(meta: ChunkedRequestMetadata): List[(String, String)] = {
-    meta.searchInfo.args.collect {
+  def getOtherTerms(args: List[String]): mutable.LinkedHashMap[String, String] = {
+    mutable.LinkedHashMap(args.collect {
       case otherArgR(name, value) if name != "fields" && name != "table" => name -> value
-    }
+    }: _*)
   }
 
   def readInitialChunk(stdin: InputStream): ChunkedRequestMetadata = {
@@ -167,11 +165,11 @@ package object splunk {
     cat.loadTable(Identifier.of(Array(dbName), tableName)).asInstanceOf[HdxTable]
   }
 
-  def getRequestedCols(getInfoMeta: ChunkedRequestMetadata, table: HdxTable): StructType = {
-    val requestedFields = getFieldsArg(getInfoMeta)
-    val otherTerms = getOtherTerms(getInfoMeta)
+  def getRequestedCols(args: List[String], table: HdxTable): StructType = {
+    val requestedFields = getFieldsArg(args)
+    val otherTerms = getOtherTerms(args)
 
-    val fields = (requestedFields ++ otherTerms.map(_._1)).distinct
+    val fields = (requestedFields ++ otherTerms.keys).distinct
 
     if (fields.isEmpty) {
       table.schema
@@ -187,18 +185,12 @@ package object splunk {
 
   def planPartitions(table: HdxTable,
                       cols: StructType,
-              minTimestamp: Instant,
-              maxTimestamp: Instant,
                 predicates: List[Predicate],
                       info: HdxConnectionInfo)
                           : List[HdxScanPartition] =
   {
     val sb = new HdxScanBuilder(info, table.storage, table)
     sb.pruneColumns(cols)
-
-    logger.info(s"minTimestamp: $minTimestamp")
-    logger.info(s"maxTimestamp: $maxTimestamp")
-
     sb.pushPredicates(predicates.toArray)
 
     val scan = sb.build()

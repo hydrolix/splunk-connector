@@ -169,7 +169,7 @@ package object splunk {
     val requestedFields = getFieldsArg(args)
     val otherTerms = getOtherTerms(args)
 
-    val fields = (requestedFields ++ otherTerms.keys).distinct
+    val fields = (List(table.primaryKeyField) ++ requestedFields ++ otherTerms.keys).distinct
 
     if (fields.isEmpty) {
       table.schema

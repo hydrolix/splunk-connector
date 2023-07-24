@@ -76,7 +76,7 @@ object Config {
 
   def writeScanJob(access: KVStoreAccess, job: ScanJob): Unit = {
     val postScan = HttpRequest
-      .newBuilder(access.uri.resolve(s"/servicesNS/nobody/hydrolix/storage/collections/data/hdx_scan_jobs/${job.sid}_${job.assignedWorkerId}"))
+      .newBuilder(access.uri.resolve(s"/servicesNS/nobody/hydrolix/storage/collections/data/hdx_scan_jobs/"))
       .POST(BodyPublishers.ofString(JSON.objectMapper.writeValueAsString(job)))
       .setHeader("Authorization", access.authHeaderValue)
       .setHeader("Content-Type", "application/json")

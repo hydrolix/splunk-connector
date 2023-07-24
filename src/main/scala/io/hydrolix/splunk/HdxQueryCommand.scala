@@ -32,7 +32,7 @@ object HdxQueryCommand {
   private val LeadershipInitialWait = 2000
   private val LeadershipRetryWait = 1000
   private val MaxLeadershipAttempts = 5
-  private val MaxPlanAttempts = 10
+  private val MaxPlanAttempts = 30
   private val PlanAttemptWait = 1000
   private val MaxScanAttempts = 10
   private val ScanAttemptWait = 1000
@@ -53,8 +53,8 @@ object HdxQueryCommand {
       KVStoreSessionKey(new URI(getInfoMeta.searchInfo.splunkdUri), getInfoMeta.searchInfo.sessionKey)
     }
 
-    val resp = GetInfoResponseMeta(
-      CommandType.streaming,
+    val getInfoResponse = GetInfoResponseMeta(
+      CommandType.events,
       generating = true,
       Nil,
       Some(600),
@@ -64,12 +64,15 @@ object HdxQueryCommand {
       InspectorMessages(Nil)
     )
 
-    writeChunk(System.out, JSON.objectMapper.writeValueAsBytes(resp), None)
+    writeChunk(System.out, JSON.objectMapper.writeValueAsBytes(getInfoResponse), None)
 
     readChunk(System.in) match {
       case (None, _) => sys.exit(0)
-      case (Some(_), _) => // TODO pay attention to what's in the `execute` request someday
+      case (Some(execMeta), execData) => // TODO pay attention to what's in the `execute` request someday maybe
         val nodeId = UUID.randomUUID()
+
+        logger.info(s"INIT-$nodeId: execute metadata: $execMeta")
+        logger.info(s"INIT-$nodeId: execute data: $execData")
 
         val hdxConfig = Config.load(kvStoreAccess, configName)
 
@@ -123,7 +126,6 @@ object HdxQueryCommand {
 
           if (!plan.workerIds.contains(nodeId)) {
             logger.info(s"WORKER-$nodeId: Planner didn't have any work for me")
-            ll.close()
             writeChunk(System.out, JSON.objectMapper.writeValueAsBytes(ExecuteResponseMeta(finished = true)), None)
           } else {
             val scanJob = retry(
@@ -308,12 +310,25 @@ object HdxQueryCommand {
 
       val hdxCols = qp.cols.fields.map { sf =>
         val hdxType = spark2Hdx(sf.name, sf.dataType, qp.primaryKeyField, qp.primaryKeyType)
-        sf.name -> HdxColumnInfo(sf.name, hdxType, nullable = true, sf.dataType, 1)
+        (
+          sf.name,
+          HdxColumnInfo(
+            sf.name,
+            hdxType,
+            nullable = true,
+            sf.dataType,
+            2 // TODO we're assuming columns are always indexed
+          )
+        )
       }.toMap
 
-      val pr = new HdxPartitionReader(info, qp.storage, qp.primaryKeyField, HdxScanPartition(qp.db, qp.table, path, qp.cols, preds, hdxCols))
-      while (pr.next()) {
-        val row = pr.get()
+      val hdxReader = new HdxPartitionReader(info, qp.storage, qp.primaryKeyField, HdxScanPartition(qp.db, qp.table, path, qp.cols, preds, hdxCols))
+      // TODO are we skipping the first record by calling next() before get()?
+      // TODO are we skipping the first record by calling next() before get()?
+      // TODO are we skipping the first record by calling next() before get()?
+      // TODO are we skipping the first record by calling next() before get()?
+      while (hdxReader.next()) {
+        val row = hdxReader.get()
         count += 1
         val rowTimestamp = DateTimeUtils.microsToInstant(row.getLong(timestampPos))
 
@@ -336,7 +351,7 @@ object HdxQueryCommand {
           }
         }
       }
-      pr.close()
+      hdxReader.close()
     }
 
     logger.info(s"WORKER-$workerId: Scanned $count records; written $written (${count - written} filtered out)")

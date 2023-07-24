@@ -26,6 +26,8 @@ limitations under the License.
         </encoder>
     </appender>
 
+    <logger name="org.apache.zookeeper" level="warn"/>
+
     <root level="info">
         <appender-ref ref="STDERR"/>
     </root>

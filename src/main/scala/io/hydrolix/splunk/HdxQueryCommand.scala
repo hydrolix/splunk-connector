@@ -292,7 +292,13 @@ object HdxQueryCommand {
     val tmp = File.createTempFile("hdx_output", ".csv")
     tmp.deleteOnExit()
     val writer = CSVWriter.open(new FileOutputStream(tmp))
-    writer.writeRow(qp.cols.map(_.name))
+    writer.writeRow(qp.cols.map { col =>
+      if (col.name == qp.primaryKeyField) {
+        "_time"
+      } else {
+        col.name
+      }
+    })
 
     val preds = deserialize[List[Predicate]](decompress(qp.predicatesBlob))
 
@@ -381,9 +387,9 @@ object HdxQueryCommand {
       case DataTypes.DoubleType => row.getDouble(i).toString
       case DataTypes.FloatType => row.getFloat(i).toString
       case DataTypes.TimestampType | DataTypes.TimestampNTZType =>
+        // TODO maybe make this conditional, e.g. primary vs. other timestamp fields
         val micros = row.getLong(i)
-        val inst = DateTimeUtils.microsToInstant(micros)
-        DateTimeFormatter.ISO_OFFSET_DATE_TIME.format(inst.atOffset(ZoneOffset.UTC))
+        (BigDecimal(micros) / 1000000).toString()
       case dt: DecimalType =>
         row.getDecimal(i, dt.precision, dt.scale).toString()
       case other =>

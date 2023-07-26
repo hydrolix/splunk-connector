@@ -39,7 +39,8 @@ create a configuration record:
 ```
 $ cat kv.json
 {
-  "jdbc_url": "jdbc:clickhouse:https://gcp-prod-test.hydrolix.net:8088?ssl=true",
+  "_key": "default",
+  "jdbc_url": "jdbc:clickhouse:tcp://gcp-prod-test.hydrolix.net:9440/_local?ssl=true",
   "api_url": "https://gcp-prod-test.hydrolix.net/config/v1/",
   "username": "alex@hydrolix.io",
   "password": "REDACTED",
@@ -92,14 +93,14 @@ This SPL search has the following components:
   * `message="Found storage."` (any other name=value pair other than `table=` or `fields=`) adds an equality 
      predicate to the query. The predicate must refer to a String-typed field, or you'll get an error.
 
-## How it Works
+# How it Works
 
-### INIT phase
-ALL NODES participating in the search (a search head, plus zero or more indexers where the app/command has been 
+## INIT phase
+ALL nodes participating in the search (a search head, plus zero or more indexers where the app/command has been 
 deployed and are registered as remote peers with the search head) do the following:
  * Generate a unique UUID. This ID is only used for the duration of this search.
  * Read the [HDXConfig](src/main/scala/io/hydrolix/splunk/model.scala#L73-96) from the Splunk KV store
-   * On the search head, we can use the URL and session key provided in the command handshaking
+   * On the search head, we can use the [URL and session key provided in the command's `getinfo` request](./src/main/scala/io/hydrolix/splunk/model.scala#L30-31).
    * On indexers, we need command-line arguments to give us the URL, username and password of the KV store where
      configuration will be made available (typically on the search head)
  * Canonicalize the Splunk Search ID (`sid`):
@@ -113,9 +114,9 @@ deployed and are registered as remote peers with the search head) do the followi
  * If leadership election has not concluded, crash
  * Once leadership election has concluded, the leader assumes the PLANNER role, and all non-leaders assume the WORKER role.
 
-### PLAN phase
+## PLAN phase
 
-#### PLANNER role
+### PLANNER role
 During the PLAN phase, the singular node that "won" the leader election assumes the PLANNER role and does the following:
  * Connect to the Hydrolix catalog (via API & JDBC) to identify which partitions will need to be scanned for this query
    * Note that this heavily reuses code from [hydrolix-spark-connector](https://github.com/hydrolix/spark-connector/)
@@ -131,7 +132,7 @@ During the PLAN phase, the singular node that "won" the leader election assumes 
  * Remember the `QueryPlan` and (self-assigned) `ScanJob` in local variables
  * Transition to the SCAN phase
 
-#### WORKER role
+### WORKER role
 During the PLAN phase, node(s) that "lost" the leader election assume the WORKER role and do the following:
  * Retry 30 times, once per second, to read the QueryPlan for the current `sid` from the Splunk KV store; if the plan
    can't be read during this time, crash
@@ -141,56 +142,55 @@ During the PLAN phase, node(s) that "lost" the leader election assume the WORKER
    Splunk KV store; if the scan job can't be read during this time, crash 
  * Once the QueryPlan and ScanJob have been read from the KV store, transition to the SCAN phase
 
-### SCAN phase
-On every node participating in the search, including the node that was the PLANNER:
-  * Create a temporary CSV file
-  * For each partition path in this node's assigned `ScanJob`:
-    * Use the `QueryPlan` and partition path to instantiate a `HdxPartitionReader`
-    * Get each record from the partition
-    * Evaluate time range and string equality predicates
-      * Note that we need to eval these predicates since `turbine_cmd hdx_reader` only does block-level filtering 
-        at best.
-    * Write records that satisfy predicates to the temporary CSV file
-  * Stream the temporary CSV file to stdout, indicating there won't be any more data from this worker by setting `finished=true` in the 
-    response metadata.
+## SCAN phase
+On every node participating in the search, including the node that _was_ the PLANNER:
+ * Create a temporary CSV file
+ * For each partition path in this node's assigned `ScanJob`:
+   * Use the `QueryPlan` and partition path to instantiate a `HdxPartitionReader`
+   * Get each record from the partition
+   * Evaluate time range and string equality predicates
+     * Note that we need to eval these predicates since `turbine_cmd hdx_reader` only does block-level filtering 
+       at best.
+   * Write records that satisfy predicates to the temporary CSV file
+ * Stream the temporary CSV file to stdout, indicating there won't be any more data from this worker by setting `finished=true` in the 
+   response metadata.
 
-## Roadmap Items
-
-### Short Term
-#### KV store access
+# Roadmap Items
+## Short Term
+### KV store access
 Figure out how indexers can read data from the KV store without needing login/password command line args, or stop using 
 KV store altogether and use Zookeeper instead I guess. 
 
-#### Secret Management
+### Secret Management
 Stop storing the cleartext Hydrolix password in the KVstore. Splunk has a [secret service](https://dev.splunk.com/enterprise/docs/developapps/manageknowledge/secretstorage/), 
 but it's not clear how to access it from an external command.
 
-#### Non-ZK operating mode
+### Non-ZK operating mode
 Consider implementing an operating mode that still works when there's no Zookeeper, e.g. by disclaiming the ability
 to run in parallel
 
-#### Store query plans & scan jobs in ZK
+### Store query plans & scan jobs in ZK
 Consider storing plans and scan jobs in ZK instead of KVstore, so they can be garbage-collected automatically. Before 
 doing this, check if object size in ZK is likely to be an issue, because plans can be large (e.g. `select *` needs the
 entire schema, which could be 500kB)
 
-#### Parallelize workers
+### Parallelize workers
 Consider allowing workers to spawn multiple concurrent scan threads, e.g. one per core? They would probably need to 
 send output to a shared queue.
 
-#### Chunked output, no tmp
+### Chunked output, no tmp
 Write output from partition reader(s):
  * Directly to stdout, not a tmp file
  * In 50k chunks, with a request/response in between
 
-### Longer Term
+## Longer Term
 
-#### Descending Time
+### Descending Time
 Splunk normally wants searches to return later results first; consider whether we want to try to emulate this. I don't 
 think there's a correctness issue here, just UX. 
 
-#### Preserve order of Hydrolix results
-Currently, all workers are scanning partitions and sending output simultaneously, so it's extremely unlikely that the 
-order of data as retrieved in the Hydrolix table will be preserved when there's more than one worker. This won't matter 
+### Preserve order of Hydrolix results
+Currently, all workers are scanning partitions and sending output simultaneously, so when there's more than one worker, 
+it's extremely unlikely that the order of data as retrieved in the Hydrolix table will be preserved. This won't matter 
 for some use cases (e.g. `|stats` or `|timechart`), but will not yield expected results for other use cases that are 
-sensitive to the order of events (e.g. `|transaction` which does sessionization into contiguous time windows)
+sensitive to the order of events (e.g. `|transaction`, which does sessionization into contiguous time windows)

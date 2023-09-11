@@ -16,6 +16,21 @@ ways if/when that becomes a priority.
   * TODO this may not be necessary?
 
 ### Building
+
+#### Prerequisites
+This project depends on an unreleased version of the Hydrolix Spark Connector, so you'll need to build that first:
+
+```
+cd ~/dev/hydrolix
+git clone git@gitlab.com:hydrolix/interop-spark.git
+cd interop-spark
+sbt -J-Xmx4G +assembly
+```
+
+If all goes well this will produce `~/dev/hydrolix/interop-spark/target/scala-2.13/hydrolix-spark-connector-assembly_2.13-1.2.0-SNAPSHOT.jar`,
+which is referenced in [commands.conf](./app/default/commands.conf) with a hardcoded path; you'll need to update it
+to suit your environment, because Splunk doesn't support environment variables in .conf files! :/ 
+
 ```
 sbt assembly
 ```

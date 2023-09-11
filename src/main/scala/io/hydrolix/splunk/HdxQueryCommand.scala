@@ -1,9 +1,9 @@
 package io.hydrolix.splunk
 
-import io.hydrolix.spark.connector.{HdxPartitionReader, HdxScanPartition}
-import io.hydrolix.spark.model.{HdxColumnDatatype, HdxColumnInfo, HdxConnectionInfo, HdxValueType, JSON}
-
 import com.github.tototoshi.csv.CSVWriter
+import io.hydrolix.spark.connector.HdxScanPartition
+import io.hydrolix.spark.connector.partitionreader.RowPartitionReader
+import io.hydrolix.spark.model.{HdxColumnDatatype, HdxColumnInfo, HdxConnectionInfo, HdxValueType, JSON}
 import org.apache.curator.framework.CuratorFrameworkFactory
 import org.apache.curator.framework.recipes.leader.LeaderLatch
 import org.apache.curator.retry.ExponentialBackoffRetry
@@ -327,7 +327,7 @@ object HdxQueryCommand {
         )
       }.toMap
 
-      val hdxReader = new HdxPartitionReader(info, qp.storage, qp.primaryKeyField, HdxScanPartition(qp.db, qp.table, path, qp.cols, preds, hdxCols))
+      val hdxReader = new RowPartitionReader(info, qp.storage, qp.primaryKeyField, HdxScanPartition(qp.db, qp.table, path, qp.cols, preds, hdxCols))
       // TODO are we skipping the first record by calling next() before get()?
       // TODO are we skipping the first record by calling next() before get()?
       // TODO are we skipping the first record by calling next() before get()?

@@ -189,7 +189,7 @@ package object splunk {
                       info: HdxConnectionInfo)
                           : List[HdxScanPartition] =
   {
-    val sb = new HdxScanBuilder(info, table.storage, table)
+    val sb = new HdxScanBuilder(info, table)
     sb.pruneColumns(cols)
     sb.pushPredicates(predicates.toArray)
 

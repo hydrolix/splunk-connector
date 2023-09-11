@@ -91,7 +91,8 @@ case class HdxConfig(
       apiUrl,
       None,
       cloudCred1,
-      cloudCred2
+      cloudCred2,
+      None
     )
 }
 

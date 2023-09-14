@@ -1,10 +1,8 @@
 package io.hydrolix.splunk
 
-import io.hydrolix.spark.connector.HdxScanPartition
-import io.hydrolix.spark.connector.partitionreader.RowPartitionReader
+import io.hydrolix.spark.connector.{HdxScanPartition, uuid0}
 import io.hydrolix.spark.model.{HdxColumnDatatype, HdxColumnInfo, HdxConnectionInfo, HdxValueType, JSON}
 
-import com.github.tototoshi.csv.CSVWriter
 import org.apache.curator.framework.CuratorFrameworkFactory
 import org.apache.curator.framework.recipes.leader.LeaderLatch
 import org.apache.curator.retry.ExponentialBackoffRetry
@@ -15,10 +13,10 @@ import org.apache.spark.sql.connector.expressions.filter.{And, Predicate}
 import org.apache.spark.sql.types._
 import org.slf4j.{Logger, LoggerFactory}
 
-import java.io.{File, FileInputStream, FileOutputStream}
 import java.net.URI
 import java.time.Instant
 import java.util.UUID
+import java.util.concurrent.LinkedBlockingQueue
 import scala.collection.mutable
 import scala.jdk.CollectionConverters._
 
@@ -36,9 +34,13 @@ object HdxQueryCommand {
   private val PlanAttemptWait = 1000
   private val MaxScanAttempts = 10
   private val ScanAttemptWait = 1000
+  private val NumReaderThreads = 4
 
   private val remoteSidR = """^remote_.*?_([\d.]+)$""".r
   private val cleanSidR = """^([\d.]+)$""".r
+
+  val partitionsDoneSignal = HdxScanPartition("", "", "", uuid0, StructType(Nil), Nil, Map())
+  val outputDoneSignal = InternalRow.empty
 
   def main(args: Array[String]): Unit = {
     val getInfoMeta = readInitialChunk(System.in)
@@ -179,7 +181,7 @@ object HdxQueryCommand {
       }
     }
 
-    if (leaderId == null) sys.error(s"A Planner wasn't elected succeed after $leadershipAttempts attempts")
+    if (leaderId == null) sys.error(s"A Planner wasn't elected after $leadershipAttempts attempts")
 
     ll
   }
@@ -280,125 +282,48 @@ object HdxQueryCommand {
   }
 
   private def doScan(workerId: UUID, info: HdxConnectionInfo, qp: QueryPlan, partitionPaths: List[String], storageIds: List[UUID]): Unit = {
-    // TODO do output in 50k chunks over multiple iterations, not just a single spew
-    // TODO do output in 50k chunks over multiple iterations, not just a single spew
-    // TODO do output in 50k chunks over multiple iterations, not just a single spew
-    // TODO do output in 50k chunks over multiple iterations, not just a single spew
-
-    // TODO send output chunks directly to stdout, don't tmp it
-    // TODO send output chunks directly to stdout, don't tmp it
-    // TODO send output chunks directly to stdout, don't tmp it
-    // TODO send output chunks directly to stdout, don't tmp it
-
-    val tmp = File.createTempFile("hdx_output", ".csv")
-    tmp.deleteOnExit()
-    val writer = CSVWriter.open(new FileOutputStream(tmp))
-    writer.writeRow(qp.cols.map { col =>
-      if (col.name == qp.primaryKeyField) {
-        "_time"
-      } else {
-        col.name
-      }
-    })
+    val jobQ = new LinkedBlockingQueue[HdxScanPartition](10)
+    val rowQ = new LinkedBlockingQueue[InternalRow](1000)
 
     val preds = deserialize[List[Predicate]](decompress(qp.predicatesBlob))
 
-    var count = 0
-    var written = 0
-    for ((path, storageId) <- partitionPaths.zip(storageIds)) {
-      val storage = qp.storages.getOrElse(storageId, sys.error(s"Unknown storage #$storageId"))
-
-      val timestampPos = qp.cols.fieldIndex(qp.primaryKeyField)
-      val otherArgPoss = qp.otherTerms.map {
-        case (name, value) =>
-          val pos = qp.cols.fieldIndex(name)
-          val typ = qp.cols.fields(pos).dataType
-          if (typ != DataTypes.StringType) sys.error(s"Can't search for $name of type $typ (only Strings)")
-          pos -> value
-      }
-
-      val hdxCols = qp.cols.fields.map { sf =>
-        val hdxType = spark2Hdx(sf.name, sf.dataType, qp.primaryKeyField, qp.primaryKeyType)
-        (
+    val hdxCols = qp.cols.fields.map { sf =>
+      val hdxType = spark2Hdx(sf.name, sf.dataType, qp.primaryKeyField, qp.primaryKeyType)
+      (
+        sf.name,
+        HdxColumnInfo(
           sf.name,
-          HdxColumnInfo(
-            sf.name,
-            hdxType,
-            nullable = true,
-            sf.dataType,
-            2 // TODO we're assuming columns are always indexed
-          )
+          hdxType,
+          nullable = true,
+          sf.dataType,
+          2 // TODO we're assuming columns are always indexed
         )
-      }.toMap
+      )
+    }.toMap
 
-      val hdxReader = new RowPartitionReader(info, storage, qp.primaryKeyField, HdxScanPartition(qp.db, qp.table, path, storageId, qp.cols, preds, hdxCols))
-      // TODO are we skipping the first record by calling next() before get()?
-      // TODO are we skipping the first record by calling next() before get()?
-      // TODO are we skipping the first record by calling next() before get()?
-      // TODO are we skipping the first record by calling next() before get()?
-      while (hdxReader.next()) {
-        val row = hdxReader.get()
-        count += 1
-        val rowTimestamp = DateTimeUtils.microsToInstant(row.getLong(timestampPos))
+    // Don't spawn more threads than partitions, but also don't spawn more than NumReaderThreads
+    val numReaderThreads = partitionPaths.size.min(NumReaderThreads)
 
-        if (rowTimestamp.compareTo(qp.minTimestamp) >= 0 && rowTimestamp.compareTo(qp.maxTimestamp) <= 0) {
-          val otherValuesMatch = otherArgPoss.forall {
-            case (pos, "null") =>
-              // Special-case "foo=null"
-              row.isNullAt(pos)
-            case (pos, value) =>
-              if (row.isNullAt(pos)) {
-                false
-              } else {
-                row.getString(pos) == value
-              }
-          }
+    val readerThreads = for (threadNo <- 1 to numReaderThreads) yield {
+      new PartitionReaderThread(workerId, threadNo, info, qp, jobQ, rowQ)
+    }
+    readerThreads.foreach(_.start())
 
-          if (otherValuesMatch) {
-            written += 1
-            writer.writeRow(rowToCsv(qp.cols, row))
-          }
-        }
-      }
-      hdxReader.close()
+    val outputThread = new OutputWriterThread(workerId, qp, rowQ)
+    outputThread.start()
+
+    for ((path, storageId) <- partitionPaths.zip(storageIds)) {
+      val scan = HdxScanPartition(qp.db, qp.table, path, storageId, qp.cols, preds, hdxCols)
+      jobQ.put(scan)
     }
 
-    logger.info(s"WORKER-$workerId: Scanned $count records; written $written (${count - written} filtered out)")
+    // Tell every reader thread there are no more partitions, and wait for them all to exit
+    readerThreads.foreach(_ => jobQ.put(partitionsDoneSignal))
+    readerThreads.foreach(_.join())
 
-    writer.close()
-    val dataLen = tmp.length()
-    val execResp = ExecuteResponseMeta(true)
-    writeChunk(System.out, JSON.objectMapper.writeValueAsBytes(execResp), Some((dataLen.toInt, new FileInputStream(tmp))))
-  }
-
-  private def rowToCsv(schema: StructType, row: InternalRow): List[String] = {
-    for ((field, i) <- schema.fields.zipWithIndex.toList) yield {
-      get(row, i, field.dataType)
-    }
-  }
-
-  private def get(row: InternalRow, i: Int, typ: DataType): String = {
-    if (row.isNullAt(i)) {
-      null
-    } else typ match {
-      case DataTypes.BooleanType => row.getBoolean(i).toString
-      case DataTypes.StringType => row.getString(i)
-      case DataTypes.LongType => row.getLong(i).toString
-      case DataTypes.IntegerType => row.getInt(i).toString
-      case DataTypes.ShortType => row.getShort(i).toString
-      case DataTypes.ByteType => row.getByte(i).toString
-      case DataTypes.DoubleType => row.getDouble(i).toString
-      case DataTypes.FloatType => row.getFloat(i).toString
-      case DataTypes.TimestampType | DataTypes.TimestampNTZType =>
-        // TODO maybe make this conditional, e.g. primary vs. other timestamp fields
-        val micros = row.getLong(i)
-        (BigDecimal(micros) / 1000000).toString()
-      case dt: DecimalType =>
-        row.getDecimal(i, dt.precision, dt.scale).toString()
-      case other =>
-        // TODO arrays, maps
-        sys.error(s"Can't serialize $other values")
-    }
+    // Tell the output thread there are no more rows, and wait for it to exit
+    rowQ.put(outputDoneSignal)
+    outputThread.join()
   }
 
   private def spark2Hdx(name: String, dataType: DataType, pkField: String, pkType: HdxValueType): HdxColumnDatatype = {

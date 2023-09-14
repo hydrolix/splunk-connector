@@ -60,14 +60,14 @@ sealed trait KVStoreAccess {
 }
 
 case class KVStorePassword(uri: URI, login: String, password: String) extends KVStoreAccess {
-  override def authHeaderValue: String = {
+  override val authHeaderValue = {
     val cred = util.Base64.getEncoder.encodeToString(s"$login:$password".getBytes("UTF-8"))
     s"Basic $cred"
   }
 }
 
 case class KVStoreSessionKey(uri: URI, sessionKey: String) extends KVStoreAccess {
-  override def authHeaderValue: String = s"Splunk $sessionKey"
+  override val authHeaderValue = s"Splunk $sessionKey"
 }
 
 /** JSON object for KVstore version of HdxConnectionInfo */
@@ -110,7 +110,7 @@ case class HdxConfig(
  * @param primaryKeyField name of the primary timestamp field in the Hydrolix table
  * @param primaryKeyType  value type of the primary timestamp field in the Hydrolix table
  * @param cols            Spark struct of the columns this query will need to read
- * @param storage         Hydrolix storage metadata for accessing cloud storage
+ * @param storages        Hydrolix storage metadata for accessing cloud storage
  * @param minTimestamp    lower time bound for this query
  * @param maxTimestamp    upper time bound for this query
  * @param otherTerms      Map[fieldName, value] of additional search terms for this query. Always equality, always AND.

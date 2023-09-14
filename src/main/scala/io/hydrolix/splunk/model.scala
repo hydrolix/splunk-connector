@@ -128,7 +128,7 @@ case class QueryPlan(
               primaryKeyField: String,
                primaryKeyType: HdxValueType,
                          cols: StructType,
-                      storage: HdxStorageSettings,
+                     storages: Map[UUID, HdxStorageSettings],
                  minTimestamp: Instant,
                  maxTimestamp: Instant,
                    otherTerms: Map[String, String],
@@ -143,4 +143,5 @@ case class ScanJob(
                           sid: String,
              assignedWorkerId: UUID,
                       claimed: Boolean,
-               partitionPaths: List[String])
+               partitionPaths: List[String],
+                   storageIds: List[UUID])

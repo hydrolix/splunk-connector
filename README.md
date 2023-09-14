@@ -27,7 +27,7 @@ cd interop-spark
 sbt -J-Xmx4G +assembly
 ```
 
-If all goes well this will produce `~/dev/hydrolix/interop-spark/target/scala-2.13/hydrolix-spark-connector-assembly_2.13-1.2.0-SNAPSHOT.jar`,
+If all goes well this will produce `~/dev/hydrolix/interop-spark/target/scala-2.13/hydrolix-spark-connector-assembly_2.13-1.3.0-SNAPSHOT.jar`,
 which is referenced in [commands.conf](./app/default/commands.conf) with a hardcoded path; you'll need to update it
 to suit your environment, because Splunk doesn't support environment variables in .conf files! :/ 
 
@@ -51,8 +51,10 @@ MongoDB). If you deploy this as a Splunk app (e.g. untar it in `$SPLUNK_HOME/etc
 create a configuration record: 
 
 #### Configuration Record JSON
-```
+```shell
 $ cat kv.json
+```
+```json
 {
   "_key": "default",
   "jdbc_url": "jdbc:clickhouse:tcp://gcp-prod-test.hydrolix.net:9440/_local?ssl=true",
@@ -66,7 +68,7 @@ $ cat kv.json
 ```
 
 #### Creating/Updating the Configuration Record
-```
+```shell
 $ curl -k -u admin:REDACTED \
     -H "Content-Type: application/json" \
     -X POST \
@@ -79,9 +81,11 @@ $ curl -k -u admin:REDACTED \
 curl -k -u admin:REDACTED \
     https://localhost:8089/servicesNS/nobody/hydrolix/storage/collections/data/hdx_config/default \
     | jq
+```
+```json
 {
   "_key": "default",
-  "user": "admin",
+  "_user": "admin",
   "jdbc_url": "jdbc:clickhouse:https://gcp-prod-test.hydrolix.net:8088?ssl=true",
   "api_url": "https://gcp-prod-test.hydrolix.net/config/v1/",
   "username": "alex@hydrolix.io",

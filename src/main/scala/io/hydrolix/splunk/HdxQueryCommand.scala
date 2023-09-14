@@ -1,9 +1,10 @@
 package io.hydrolix.splunk
 
-import com.github.tototoshi.csv.CSVWriter
 import io.hydrolix.spark.connector.HdxScanPartition
 import io.hydrolix.spark.connector.partitionreader.RowPartitionReader
 import io.hydrolix.spark.model.{HdxColumnDatatype, HdxColumnInfo, HdxConnectionInfo, HdxValueType, JSON}
+
+import com.github.tototoshi.csv.CSVWriter
 import org.apache.curator.framework.CuratorFrameworkFactory
 import org.apache.curator.framework.recipes.leader.LeaderLatch
 import org.apache.curator.retry.ExponentialBackoffRetry
@@ -113,7 +114,7 @@ object HdxQueryCommand {
           // TODO make sure every ScanJob is claimed
           // TODO make sure every ScanJob is claimed
 
-          doScan(nodeId, hdxConfig.connectionInfo, plan, scanJob.partitionPaths)
+          doScan(nodeId, hdxConfig.connectionInfo, plan, scanJob.partitionPaths, scanJob.storageIds)
         } else {
           logger.info(s"WORKER-$nodeId: I'm a worker")
 
@@ -135,7 +136,7 @@ object HdxQueryCommand {
 
             // TODO claim the scanJob
 
-            doScan(nodeId, hdxConfig.connectionInfo, plan, scanJob.partitionPaths)
+            doScan(nodeId, hdxConfig.connectionInfo, plan, scanJob.partitionPaths, scanJob.storageIds)
           }
 
           ll.close()
@@ -228,13 +229,13 @@ object HdxQueryCommand {
           table.primaryKeyField,
           table.hdxCols(table.primaryKeyField).hdxType.`type`,
           cols,
-          table.storage,
+          table.storages,
           minTimestamp,
           maxTimestamp,
           otherTerms,
           predicatesBlob
         ),
-        hdxPartitions.map(_.path)
+        hdxPartitions.map(part => part.path -> part.storageId)
       )
     }
 
@@ -242,20 +243,21 @@ object HdxQueryCommand {
 
     val numWorkers = workerIds.size
     logger.info(s"PLANNER-$nodeId: Assigning ${partitionPaths.size} partitions to $numWorkers workers")
-    val partitionsPerWorker = mutable.Map[UUID, Vector[String]]().withDefaultValue(Vector())
+    val partitionsPerWorker = mutable.Map[UUID, Vector[(String, UUID)]]().withDefaultValue(Vector())
 
     // Allocate every partition that needs to be scanned to one of the workers
-    for ((path, i) <- partitionPaths.zipWithIndex) {
+    for (((path, storageId), i) <- partitionPaths.zipWithIndex) {
       val worker = workerIds(i % numWorkers)
-      partitionsPerWorker.update(worker, partitionsPerWorker(worker) :+ path)
+      partitionsPerWorker.update(worker, partitionsPerWorker(worker) :+ (path -> storageId))
     }
 
     // Write out the per-worker partition lists under the worker IDs
     for ((workerId, partitions) <- partitionsPerWorker) {
       logger.info(s"PLANNER-$nodeId: Worker $workerId should scan ${partitions.size} partitions")
+      val (paths, storageIds) = partitions.toList.unzip
       Config.writeScanJob(
         kvStoreAccess,
-        ScanJob(s"${sid}_$workerId", None, now, sid, workerId, claimed = false, partitions.toList)
+        ScanJob(s"${sid}_$workerId", None, now, sid, workerId, claimed = false, paths, storageIds)
       )
     }
 
@@ -277,7 +279,7 @@ object HdxQueryCommand {
     None
   }
 
-  private def doScan(workerId: UUID, info: HdxConnectionInfo, qp: QueryPlan, partitionPaths: List[String]): Unit = {
+  private def doScan(workerId: UUID, info: HdxConnectionInfo, qp: QueryPlan, partitionPaths: List[String], storageIds: List[UUID]): Unit = {
     // TODO do output in 50k chunks over multiple iterations, not just a single spew
     // TODO do output in 50k chunks over multiple iterations, not just a single spew
     // TODO do output in 50k chunks over multiple iterations, not just a single spew
@@ -303,7 +305,9 @@ object HdxQueryCommand {
 
     var count = 0
     var written = 0
-    for (path <- partitionPaths) {
+    for ((path, storageId) <- partitionPaths.zip(storageIds)) {
+      val storage = qp.storages.getOrElse(storageId, sys.error(s"Unknown storage #$storageId"))
+
       val timestampPos = qp.cols.fieldIndex(qp.primaryKeyField)
       val otherArgPoss = qp.otherTerms.map {
         case (name, value) =>
@@ -327,7 +331,7 @@ object HdxQueryCommand {
         )
       }.toMap
 
-      val hdxReader = new RowPartitionReader(info, qp.storage, qp.primaryKeyField, HdxScanPartition(qp.db, qp.table, path, qp.cols, preds, hdxCols))
+      val hdxReader = new RowPartitionReader(info, storage, qp.primaryKeyField, HdxScanPartition(qp.db, qp.table, path, storageId, qp.cols, preds, hdxCols))
       // TODO are we skipping the first record by calling next() before get()?
       // TODO are we skipping the first record by calling next() before get()?
       // TODO are we skipping the first record by calling next() before get()?

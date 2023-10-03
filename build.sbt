@@ -35,8 +35,7 @@ mainClass := Some("io.hydrolix.splunk.HdxQueryCommand")
 //Proguard / proguardOptions += ProguardOptions.keepMain(mainClass.value.get)
 
 libraryDependencies ++= Seq(
-  "io.hydrolix" %% "hydrolix-spark-connector" % "1.3.0-SNAPSHOT",
-  ("org.apache.spark" %% "spark-sql" % "3.4.1").exclude("org.apache.logging.log4j", "log4j-slf4j2-impl"),
+  "io.hydrolix" %% "hydrolix-connectors-core" % "0.2.2-SNAPSHOT",
   "com.github.tototoshi" %% "scala-csv" % "1.3.10",
   "org.apache.curator" % "curator-recipes" % "5.5.0",
   "com.github.sbt" % "junit-interface" % "0.13.3" % Test,

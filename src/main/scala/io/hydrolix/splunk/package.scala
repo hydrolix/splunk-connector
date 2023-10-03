@@ -1,16 +1,5 @@
 package io.hydrolix
 
-import io.hydrolix.spark.connector.{HdxScanBuilder, HdxScanPartition, HdxTable, HdxTableCatalog}
-import io.hydrolix.spark.model.{HdxConnectionInfo, JSON}
-
-import com.google.common.io.ByteStreams
-import com.google.common.primitives.Bytes
-import org.apache.spark.sql.connector.catalog.Identifier
-import org.apache.spark.sql.connector.expressions.filter.Predicate
-import org.apache.spark.sql.types.StructType
-import org.apache.spark.sql.util.CaseInsensitiveStringMap
-import org.slf4j.LoggerFactory
-
 import java.io.{ByteArrayInputStream, ByteArrayOutputStream, InputStream, ObjectInputStream, ObjectOutputStream, OutputStream, PushbackInputStream}
 import java.util.Base64
 import java.util.zip.{GZIPInputStream, GZIPOutputStream}
@@ -18,8 +7,15 @@ import scala.collection.mutable
 import scala.concurrent.ExecutionContext.Implicits.global
 import scala.concurrent.duration.Duration
 import scala.concurrent.{Await, Future}
-import scala.jdk.CollectionConverters.MapHasAsJava
 import scala.util.Using
+
+import com.google.common.io.ByteStreams
+import com.google.common.primitives.Bytes
+import org.slf4j.LoggerFactory
+
+import io.hydrolix.connectors.expr.Expr
+import io.hydrolix.connectors.types.StructType
+import io.hydrolix.connectors.{HdxConnectionInfo, HdxJdbcSession, HdxPartitionScanPlan, HdxPushdown, HdxTable, HdxTableCatalog, JSON}
 
 package object splunk {
   private val logger = LoggerFactory.getLogger(getClass)
@@ -154,15 +150,13 @@ package object splunk {
   }
 
   def tableCatalog(info: HdxConnectionInfo): HdxTableCatalog = {
-    val opts = new CaseInsensitiveStringMap(info.asMap.asJava)
-
     val catalog = new HdxTableCatalog()
-    catalog.initialize("hydrolix", opts)
+    catalog.initialize("hydrolix", info.asMap)
     catalog
   }
 
   def hdxTable(cat: HdxTableCatalog, dbName: String, tableName: String): HdxTable = {
-    cat.loadTable(Identifier.of(Array(dbName), tableName)).asInstanceOf[HdxTable]
+    cat.loadTable(List(dbName, tableName))
   }
 
   def getRequestedCols(args: List[String], table: HdxTable): StructType = {
@@ -174,29 +168,41 @@ package object splunk {
     if (fields.isEmpty) {
       table.schema
     } else {
-      val schemaFields = table.schema.map { field => field.name -> field }.toMap
+      val schemaFields = table.schema.fields.map { field => field.name -> field }.toMap
       StructType(fields.flatMap { name =>
         val mf = schemaFields.get(name)
         if (mf.isEmpty) logger.warn(s"Requested field $name not found in table schema (${table.schema})")
         mf
-      })
+      }: _*)
     }
   }
 
   def planPartitions(table: HdxTable,
                       cols: StructType,
-                predicates: List[Predicate],
+                predicates: List[Expr[Boolean]],
                       info: HdxConnectionInfo)
-                          : List[HdxScanPartition] =
+                          : List[HdxPartitionScanPlan] =
   {
-    val sb = new HdxScanBuilder(info, table)
-    sb.pruneColumns(cols)
-    sb.pushPredicates(predicates.toArray)
+    val pkf = table.schema.byName.getOrElse(table.primaryKeyField, sys.error(s"No metadata for primary key field ${table.primaryKeyField}"))
 
-    val scan = sb.build()
-    val batch = scan.toBatch
+    val pushable = predicates.groupBy { pred =>
+      connectors.HdxPushdown.pushable(
+        table.primaryKeyField,
+        table.shardKeyField,
+        pred,
+        table.hdxCols
+      )
+    }
 
-    batch.planInputPartitions().toList.map(_.asInstanceOf[HdxScanPartition])
+    val pushed = pushable.getOrElse(1, Nil) ++ pushable.getOrElse(2, Nil)
+
+    val prunedColumns = if (cols.fields.isEmpty) {
+      StructType(pkf)
+    } else {
+      cols
+    }
+
+    HdxPushdown.planPartitions(info, HdxJdbcSession(info), table, prunedColumns, pushed)
   }
 
 }

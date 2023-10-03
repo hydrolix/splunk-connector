@@ -1,13 +1,13 @@
 package io.hydrolix.splunk
 
-import io.hydrolix.spark.model.JSON
+import java.io.{ByteArrayInputStream, ByteArrayOutputStream}
+import java.time.Instant
 
 import com.google.common.io.ByteStreams
 import org.junit.Assert.{assertArrayEquals, assertEquals, fail}
 import org.junit.Test
 
-import java.io.{ByteArrayInputStream, ByteArrayOutputStream}
-import java.time.Instant
+import io.hydrolix.connectors.JSON
 
 class ReadChunkTest {
   private def message(meta: Array[Byte], data: Array[Byte]): Array[Byte] = {

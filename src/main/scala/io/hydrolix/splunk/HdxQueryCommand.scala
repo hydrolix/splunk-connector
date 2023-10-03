@@ -1,18 +1,5 @@
 package io.hydrolix.splunk
 
-import io.hydrolix.spark.connector.{HdxScanPartition, uuid0}
-import io.hydrolix.spark.model.{HdxColumnDatatype, HdxColumnInfo, HdxConnectionInfo, HdxValueType, JSON}
-
-import org.apache.curator.framework.CuratorFrameworkFactory
-import org.apache.curator.framework.recipes.leader.LeaderLatch
-import org.apache.curator.retry.ExponentialBackoffRetry
-import org.apache.spark.sql.HdxPushdown.{GetField, Literal}
-import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.util.DateTimeUtils
-import org.apache.spark.sql.connector.expressions.filter.{And, Predicate}
-import org.apache.spark.sql.types._
-import org.slf4j.{Logger, LoggerFactory}
-
 import java.net.URI
 import java.time.Instant
 import java.util.UUID
@@ -20,6 +7,16 @@ import java.util.concurrent.LinkedBlockingQueue
 import scala.collection.mutable
 import scala.jdk.CollectionConverters._
 
+import org.apache.curator.framework.CuratorFrameworkFactory
+import org.apache.curator.framework.recipes.leader.LeaderLatch
+import org.apache.curator.retry.ExponentialBackoffRetry
+import org.slf4j.{Logger, LoggerFactory}
+
+import io.hydrolix.connectors.expr._
+import io.hydrolix.connectors.types.{StringType, TimestampType}
+import io.hydrolix.connectors.{HdxColumnInfo, HdxConnectionInfo, HdxPartitionScanPlan, JSON, Types, microsToInstant, types, uuid0}
+
+//noinspection TypeAnnotation
 object HdxQueryCommand {
   private val logger = LoggerFactory.getLogger(getClass)
 
@@ -39,8 +36,8 @@ object HdxQueryCommand {
   private val remoteSidR = """^remote_.*?_([\d.]+)$""".r
   private val cleanSidR = """^([\d.]+)$""".r
 
-  val partitionsDoneSignal = HdxScanPartition("", "", "", uuid0, StructType(Nil), Nil, Map())
-  val outputDoneSignal = InternalRow.empty
+  val partitionsDoneSignal = HdxPartitionScanPlan("", "", uuid0, "", types.StructType(), Nil, Map())
+  val outputDoneSignal = StructLiteral(Map(), types.StructType())
 
   def main(args: Array[String]): Unit = {
     val getInfoMeta = readInitialChunk(System.in)
@@ -95,8 +92,8 @@ object HdxQueryCommand {
 
           val workerIds = ll.getParticipants.asScala.toList.map(p => UUID.fromString(p.getId))
 
-          val minTimestamp = DateTimeUtils.microsToInstant((getInfoMeta.searchInfo.earliestTime * 1000000).toLong)
-          val maxTimestamp = DateTimeUtils.microsToInstant((getInfoMeta.searchInfo.latestTime * 1000000).toLong)
+          val minTimestamp = microsToInstant((getInfoMeta.searchInfo.earliestTime * 1000000).toLong)
+          val maxTimestamp = microsToInstant((getInfoMeta.searchInfo.latestTime * 1000000).toLong)
 
           val plan = doPlan(minTimestamp, maxTimestamp, getInfoMeta.searchInfo.args, kvStoreAccess, nodeId, sid, hdxConfig.connectionInfo, now, workerIds)
 
@@ -208,11 +205,11 @@ object HdxQueryCommand {
 
       val otherTerms = getOtherTerms(args).toMap
 
-      val predicates = List(new And(
-        new Predicate(">=", Array(GetField(table.primaryKeyField), Literal(minTimestamp))),
-        new Predicate("<=", Array(GetField(table.primaryKeyField), Literal(maxTimestamp))),
-      )) ++ otherTerms.map {
-        case (k, v) => new Predicate("=", Array(GetField(k), Literal(v)))
+      val predicates = List(And(List(
+        GreaterEqual(GetField(table.primaryKeyField, TimestampType(3)), TimestampLiteral(minTimestamp)),
+        LessEqual(GetField(table.primaryKeyField, TimestampType(3)), TimestampLiteral(maxTimestamp)),
+      ))) ++ otherTerms.map {
+        case (k, v) => Equal(GetField(k, StringType), StringLiteral(v))
       }
 
       val predicatesBlob = compress(serialize(predicates))
@@ -237,7 +234,7 @@ object HdxQueryCommand {
           otherTerms,
           predicatesBlob
         ),
-        hdxPartitions.map(part => part.path -> part.storageId)
+        hdxPartitions.map(part => part.partitionPath -> part.storageId)
       )
     }
 
@@ -281,21 +278,27 @@ object HdxQueryCommand {
     None
   }
 
-  private def doScan(workerId: UUID, info: HdxConnectionInfo, qp: QueryPlan, partitionPaths: List[String], storageIds: List[UUID]): Unit = {
-    val jobQ = new LinkedBlockingQueue[HdxScanPartition](10)
-    val rowQ = new LinkedBlockingQueue[InternalRow](1000)
+  private def doScan(workerId: UUID,
+                         info: HdxConnectionInfo,
+                           qp: QueryPlan,
+               partitionPaths: List[String],
+                   storageIds: List[UUID])
+                             : Unit =
+  {
+    val jobQ = new LinkedBlockingQueue[HdxPartitionScanPlan](10)
+    val rowQ = new LinkedBlockingQueue[StructLiteral](1000)
 
-    val preds = deserialize[List[Predicate]](decompress(qp.predicatesBlob))
+    val preds = deserialize[List[Expr[Boolean]]](decompress(qp.predicatesBlob))
 
     val hdxCols = qp.cols.fields.map { sf =>
-      val hdxType = spark2Hdx(sf.name, sf.dataType, qp.primaryKeyField, qp.primaryKeyType)
+      val hdxType = Types.valueTypeToHdx(sf.`type`)
       (
         sf.name,
         HdxColumnInfo(
           sf.name,
           hdxType,
           nullable = true,
-          sf.dataType,
+          sf.`type`,
           2 // TODO we're assuming columns are always indexed
         )
       )
@@ -313,7 +316,7 @@ object HdxQueryCommand {
     outputThread.start()
 
     for ((path, storageId) <- partitionPaths.zip(storageIds)) {
-      val scan = HdxScanPartition(qp.db, qp.table, path, storageId, qp.cols, preds, hdxCols)
+      val scan = HdxPartitionScanPlan(qp.db, qp.table, storageId, path, qp.cols, preds, hdxCols)
       jobQ.put(scan)
     }
 
@@ -324,46 +327,5 @@ object HdxQueryCommand {
     // Tell the output thread there are no more rows, and wait for it to exit
     rowQ.put(outputDoneSignal)
     outputThread.join()
-  }
-
-  private def spark2Hdx(name: String, dataType: DataType, pkField: String, pkType: HdxValueType): HdxColumnDatatype = {
-    dataType match {
-      case DataTypes.StringType =>
-        HdxColumnDatatype(HdxValueType.String, index = true, primary = false)
-
-      case DataTypes.FloatType | DataTypes.DoubleType =>
-        HdxColumnDatatype(HdxValueType.Double, index = false, primary = false)
-
-      case DataTypes.ByteType | DataTypes.ShortType | DataTypes.IntegerType =>
-        // TODO maybe byte => Int8?
-        HdxColumnDatatype(HdxValueType.Int32, index = true, primary = false)
-
-      case DataTypes.LongType =>
-        HdxColumnDatatype(HdxValueType.Int64, index = true, primary = false)
-
-      case dt: DecimalType if dt.precision == 20 && dt.scale == 0 =>
-        HdxColumnDatatype(HdxValueType.UInt64, index = true, primary = false)
-
-      case DataTypes.TimestampType if name == pkField =>
-        HdxColumnDatatype(pkType, index = true, primary = true)
-
-      case DataTypes.TimestampType =>
-        HdxColumnDatatype(pkType, index = true, primary = false)
-
-      case DataTypes.BooleanType =>
-        HdxColumnDatatype(HdxValueType.Boolean, index = true, primary = false)
-
-      case ArrayType(elementType, _) =>
-        val elt = spark2Hdx("n/a", elementType, "n/a", HdxValueType.DateTime64)
-        HdxColumnDatatype(HdxValueType.Array, index = false, primary = false, elements = Some(List(elt)))
-
-      case MapType(keyType, valueType, _) =>
-        val kt = spark2Hdx("n/a", keyType, "n/a", HdxValueType.DateTime64)
-        val vt = spark2Hdx("n/a", valueType, "n/a", HdxValueType.DateTime64)
-        HdxColumnDatatype(HdxValueType.Map, index = false, primary = false, elements = Some(List(kt, vt)))
-
-      case other =>
-        sys.error(s"Don't know how to convert $name: $other")
-    }
   }
 }

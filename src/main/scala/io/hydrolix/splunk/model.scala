@@ -1,16 +1,16 @@
 package io.hydrolix.splunk
 
-import io.hydrolix.spark.model.{HdxConnectionInfo, HdxStorageSettings, HdxValueType}
-
-import com.fasterxml.jackson.annotation.JsonProperty
-import com.fasterxml.jackson.databind.PropertyNamingStrategies.SnakeCaseStrategy
-import com.fasterxml.jackson.databind.annotation.JsonNaming
-import org.apache.spark.sql.types.StructType
-
 import java.net.URI
 import java.time.Instant
 import java.util
 import java.util.UUID
+
+import com.fasterxml.jackson.annotation.JsonProperty
+import com.fasterxml.jackson.databind.PropertyNamingStrategies.SnakeCaseStrategy
+import com.fasterxml.jackson.databind.annotation.JsonNaming
+
+import io.hydrolix.connectors.types.StructType
+import io.hydrolix.connectors.{HdxConnectionInfo, HdxStorageSettings, HdxValueType}
 
 @JsonNaming(classOf[SnakeCaseStrategy])
 case class ChunkedRequestMetadata(action: String,

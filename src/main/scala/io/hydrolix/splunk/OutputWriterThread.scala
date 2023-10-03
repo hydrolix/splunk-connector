@@ -1,23 +1,23 @@
 package io.hydrolix.splunk
 
-import io.hydrolix.spark.model.JSON
-
-import com.clickhouse.logging.LoggerFactory
-import com.github.tototoshi.csv.CSVWriter
-import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.types.{DataType, DataTypes, DecimalType, StructType}
-
 import java.io.{ByteArrayInputStream, ByteArrayOutputStream}
 import java.util.UUID
 import java.util.concurrent.LinkedBlockingQueue
 import scala.util.Using.resource
 import scala.util.control.Breaks.{break, breakable}
 
+import com.clickhouse.logging.LoggerFactory
+import com.github.tototoshi.csv.CSVWriter
+
+import io.hydrolix.connectors.JSON
+import io.hydrolix.connectors.expr.StructLiteral
+import io.hydrolix.connectors.types._
+
 /**
  * A thread that reads rows from a queue, and writes them to stdout in chunks of 50000 rows at a time.
  * There should only be one of these, to make sure our output is sequentially consistent.
  */
-class OutputWriterThread(workerId: UUID, qp: QueryPlan, rowQ: LinkedBlockingQueue[InternalRow]) extends Thread {
+class OutputWriterThread(workerId: UUID, qp: QueryPlan, rowQ: LinkedBlockingQueue[StructLiteral]) extends Thread {
   private val log = LoggerFactory.getLogger(getClass)
 
   override def run(): Unit = {
@@ -31,7 +31,7 @@ class OutputWriterThread(workerId: UUID, qp: QueryPlan, rowQ: LinkedBlockingQueu
       val baos = new ByteArrayOutputStream(1024*1024)
       resource(CSVWriter.open(baos)) { writer =>
         // Write chunk header row
-        writer.writeRow(qp.cols.map { col =>
+        writer.writeRow(qp.cols.fields.map { col =>
           if (col.name == qp.primaryKeyField) {
             "_time"
           } else {
@@ -88,30 +88,34 @@ class OutputWriterThread(workerId: UUID, qp: QueryPlan, rowQ: LinkedBlockingQueu
     }
   }
 
-  private def rowToCsv(schema: StructType, row: InternalRow): List[String] = {
+  private def rowToCsv(schema: StructType, row: StructLiteral): List[String] = {
     for ((field, i) <- schema.fields.zipWithIndex.toList) yield {
-      get(row, i, field.dataType)
+      get(row, i, field.`type`)
     }
   }
 
-  private def get(row: InternalRow, i: Int, typ: DataType): String = {
+  private def get(row: StructLiteral, i: Int, typ: ValueType): String = {
     if (row.isNullAt(i)) {
       null
     } else typ match {
-      case DataTypes.BooleanType => row.getBoolean(i).toString
-      case DataTypes.StringType => row.getString(i)
-      case DataTypes.LongType => row.getLong(i).toString
-      case DataTypes.IntegerType => row.getInt(i).toString
-      case DataTypes.ShortType => row.getShort(i).toString
-      case DataTypes.ByteType => row.getByte(i).toString
-      case DataTypes.DoubleType => row.getDouble(i).toString
-      case DataTypes.FloatType => row.getFloat(i).toString
-      case DataTypes.TimestampType | DataTypes.TimestampNTZType =>
+      case BooleanType => row.getBoolean(i).toString
+      case StringType => row.getString(i)
+      case Int8Type => row.getByte(i).toString
+      case UInt8Type => row.getShort(i).toString
+      case Int16Type => row.getShort(i).toString
+      case UInt16Type => row.getInt(i).toString
+      case Int32Type => row.getInt(i).toString
+      case UInt32Type => row.getLong(i).toString
+      case Int64Type => row.getLong(i).toString
+      case UInt64Type => row.getDecimal(i, 20, 0).toString
+      case Float32Type => row.getFloat(i).toString
+      case Float64Type => row.getDouble(i).toString
+      case TimestampType(_) =>
         // TODO maybe make this conditional, e.g. primary vs. other timestamp fields
         val micros = row.getLong(i)
         (BigDecimal(micros) / 1000000).toString()
-      case dt: DecimalType =>
-        row.getDecimal(i, dt.precision, dt.scale).toString()
+      case DecimalType(precision, scale) =>
+        row.getDecimal(i, precision, scale).toString()
       case other =>
         // TODO arrays, maps
         sys.error(s"Can't serialize $other values")

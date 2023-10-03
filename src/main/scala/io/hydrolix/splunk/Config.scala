@@ -1,9 +1,5 @@
 package io.hydrolix.splunk
 
-import io.hydrolix.spark.model.JSON
-
-import org.slf4j.LoggerFactory
-
 import java.net.Socket
 import java.net.http.HttpRequest.BodyPublishers
 import java.net.http.HttpResponse.BodyHandlers
@@ -11,6 +7,10 @@ import java.net.http.{HttpClient, HttpRequest}
 import java.security.cert.X509Certificate
 import java.util.UUID
 import javax.net.ssl.{SSLContext, SSLEngine, X509ExtendedTrustManager}
+
+import org.slf4j.LoggerFactory
+
+import io.hydrolix.connectors.JSON
 
 object Config {
   private val logger = LoggerFactory.getLogger(getClass)

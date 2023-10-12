@@ -6,11 +6,14 @@ import java.util
 import java.util.UUID
 
 import com.fasterxml.jackson.annotation.JsonProperty
+import com.fasterxml.jackson.core.{JsonGenerator, JsonParser}
 import com.fasterxml.jackson.databind.PropertyNamingStrategies.SnakeCaseStrategy
-import com.fasterxml.jackson.databind.annotation.JsonNaming
+import com.fasterxml.jackson.databind.annotation.{JsonDeserialize, JsonNaming, JsonSerialize}
+import com.fasterxml.jackson.databind.{DeserializationContext, JsonDeserializer, JsonSerializer, SerializerProvider}
 
 import io.hydrolix.connectors.types.StructType
 import io.hydrolix.connectors.{HdxConnectionInfo, HdxStorageSettings, HdxValueType}
+import io.hydrolix.splunk
 
 @JsonNaming(classOf[SnakeCaseStrategy])
 case class ChunkedRequestMetadata(action: String,
@@ -127,6 +130,8 @@ case class QueryPlan(
                         table: String,
               primaryKeyField: String,
                primaryKeyType: HdxValueType,
+  @JsonSerialize(using=classOf[StructTypeSerializer])
+  @JsonDeserialize(using=classOf[StructTypeDeserializer])
                          cols: StructType,
                      storages: Map[UUID, HdxStorageSettings],
                  minTimestamp: Instant,
@@ -145,3 +150,15 @@ case class ScanJob(
                       claimed: Boolean,
                partitionPaths: List[String],
                    storageIds: List[UUID])
+
+final class StructTypeSerializer extends JsonSerializer[StructType] {
+  override def serialize(value: StructType, gen: JsonGenerator, serializers: SerializerProvider): Unit = {
+    gen.writeString(compress(splunk.serialize(value)))
+  }
+}
+
+final class StructTypeDeserializer extends JsonDeserializer[StructType] {
+  override def deserialize(p: JsonParser, ctxt: DeserializationContext): StructType = {
+    splunk.deserialize(decompress(p.getValueAsString))
+  }
+}

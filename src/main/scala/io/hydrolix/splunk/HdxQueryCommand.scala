@@ -53,7 +53,7 @@ object HdxQueryCommand {
     }
 
     val getInfoResponse = GetInfoResponseMeta(
-      CommandType.events,
+      CommandType.streaming,
       generating = true,
       Nil,
       Some(600),

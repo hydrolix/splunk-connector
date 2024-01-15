@@ -14,26 +14,22 @@ ways if/when that becomes a priority.
 * [Enable Token Authentication](https://docs.splunk.com/Documentation/Splunk/9.1.0/Security/EnableTokenAuth)
 * Create an auth token for whichever Splunk user you want to run Hydrolix queries as (e.g. `admin`). 
   * TODO this may not be necessary?
+* A [Zookeeper](https://zookeeper.apache.org/) cluster to coordinate the distribution of work between search head and 
+  search peers 
 
 ### Building
-
-#### Prerequisites
-This project depends on an unreleased version of the Hydrolix Spark Connector, so you'll need to build that first:
+Install [SBT](https://scala-sbt.org/) in whatever way makes sense for your OS
 
 ```
 cd ~/dev/hydrolix
-git clone git@gitlab.com:hydrolix/interop-spark.git
-cd interop-spark
-sbt -J-Xmx4G +assembly
+git clone git@gitlab.com:hydrolix/interop-splunk.git
+cd interop-splunk
+sbt -J-Xmx4G assembly
 ```
 
-If all goes well this will produce `~/dev/hydrolix/interop-spark/target/scala-2.13/hydrolix-spark-connector-assembly_2.13-1.3.0-SNAPSHOT.jar`,
+If all goes well this will produce `~/dev/hydrolix/interop-splunk/target/scala-2.13/splunk-interop-assembly-0.2.0-SNAPSHOT.jar`,
 which is referenced in [commands.conf](./app/default/commands.conf) with a hardcoded path; you'll need to update it
 to suit your environment, because Splunk doesn't support environment variables in .conf files! :/ 
-
-```
-sbt assembly
-```
 
 ### Installation
 #### Running in-place
@@ -118,8 +114,8 @@ This SPL search has the following components:
 ALL nodes participating in the search (a search head, plus zero or more indexers where the app/command has been 
 deployed and are registered as remote peers with the search head) do the following:
  * Generate a unique UUID. This ID is only used for the duration of this search.
- * Read the [HDXConfig](src/main/scala/io/hydrolix/splunk/model.scala#L73-96) from the Splunk KV store
-   * On the search head, we can use the [URL and session key provided in the command's `getinfo` request](./src/main/scala/io/hydrolix/splunk/model.scala#L30-31).
+ * Read the [HDXConfig](src/main/scala/io/hydrolix/splunk/model.scala#L77-101) from the Splunk KV store
+   * On the search head, we can use the [URL and session key provided in the command's `getinfo` request](./src/main/scala/io/hydrolix/splunk/model.scala#L34-35).
    * On indexers, we need command-line arguments to give us the URL, username and password of the KV store where
      configuration will be made available (typically on the search head)
  * Canonicalize the Splunk Search ID (`sid`):

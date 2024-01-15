@@ -1,4 +1,4 @@
-package io.hydrolix.splunk
+package io.hydrolix.connector.splunk
 
 import java.io.{ByteArrayInputStream, ByteArrayOutputStream}
 import java.time.Instant
@@ -49,7 +49,7 @@ class ReadChunkTest {
 
     readChunk(new ByteArrayInputStream(minimal)) match {
       case (meta, Some((len, stream))) =>
-        assertEquals(getinfo, meta)
+        assertEquals(Some(getinfo), meta)
         assertEquals(len, helloWorld.length)
         assertArrayEquals(helloWorld, ByteStreams.toByteArray(stream))
       case other =>
@@ -63,7 +63,7 @@ class ReadChunkTest {
 
     readChunk(new ByteArrayInputStream(minimal)) match {
       case (meta, None) =>
-        assertEquals(getinfo, meta)
+        assertEquals(Some(getinfo), meta)
       case other =>
         fail(other.toString())
     }

@@ -1,4 +1,4 @@
-package io.hydrolix
+package io.hydrolix.connector
 
 import java.io.{ByteArrayInputStream, ByteArrayOutputStream, InputStream, ObjectInputStream, ObjectOutputStream, OutputStream, PushbackInputStream}
 import java.util.Base64
@@ -13,6 +13,7 @@ import com.google.common.io.ByteStreams
 import com.google.common.primitives.Bytes
 import org.slf4j.LoggerFactory
 
+import io.hydrolix.connectors
 import io.hydrolix.connectors.expr.Expr
 import io.hydrolix.connectors.types.StructType
 import io.hydrolix.connectors.{HdxConnectionInfo, HdxJdbcSession, HdxPartitionScanPlan, HdxPushdown, HdxTable, HdxTableCatalog, JSON}
@@ -112,7 +113,7 @@ package object splunk {
     }
   }
 
-  def serialize(obj: Serializable): Array[Byte] = {
+  def ser(obj: Serializable): Array[Byte] = {
     Using.Manager { use =>
       val baos = use(new ByteArrayOutputStream(8192))
       val out = use(new ObjectOutputStream(baos))
@@ -141,7 +142,7 @@ package object splunk {
     }.get
   }
 
-  def deserialize[A <: Serializable](bytes: Array[Byte]): A = {
+  def deser[A <: Serializable](bytes: Array[Byte]): A = {
     Using.Manager { use =>
       val bais = use(new ByteArrayInputStream(bytes))
       val ois = use(new ObjectInputStream(bais))
@@ -173,7 +174,7 @@ package object splunk {
         val mf = schemaFields.get(name)
         if (mf.isEmpty) logger.warn(s"Requested field $name not found in table schema (${table.schema})")
         mf
-      }: _*)
+      })
     }
   }
 
@@ -197,12 +198,11 @@ package object splunk {
     val pushed = pushable.getOrElse(1, Nil) ++ pushable.getOrElse(2, Nil)
 
     val prunedColumns = if (cols.fields.isEmpty) {
-      StructType(pkf)
+      StructType(List(pkf))
     } else {
       cols
     }
 
     HdxPushdown.planPartitions(info, HdxJdbcSession(info), table, prunedColumns, pushed)
   }
-
 }

@@ -1,4 +1,4 @@
-package io.hydrolix.splunk
+package io.hydrolix.connector.splunk
 
 import java.io.{ByteArrayInputStream, ByteArrayOutputStream}
 import java.util.UUID
@@ -10,14 +10,14 @@ import com.clickhouse.logging.LoggerFactory
 import com.github.tototoshi.csv.CSVWriter
 
 import io.hydrolix.connectors.JSON
-import io.hydrolix.connectors.expr.StructLiteral
+import io.hydrolix.connectors.data.Row
 import io.hydrolix.connectors.types._
 
 /**
  * A thread that reads rows from a queue, and writes them to stdout in chunks of 50000 rows at a time.
  * There should only be one of these, to make sure our output is sequentially consistent.
  */
-class OutputWriterThread(workerId: UUID, qp: QueryPlan, rowQ: LinkedBlockingQueue[StructLiteral]) extends Thread {
+class OutputWriterThread(workerId: UUID, qp: QueryPlan, rowQ: LinkedBlockingQueue[Row]) extends Thread {
   private val log = LoggerFactory.getLogger(getClass)
 
   override def run(): Unit = {
@@ -88,13 +88,13 @@ class OutputWriterThread(workerId: UUID, qp: QueryPlan, rowQ: LinkedBlockingQueu
     }
   }
 
-  private def rowToCsv(schema: StructType, row: StructLiteral): List[String] = {
-    for ((field, i) <- schema.fields.zipWithIndex.toList) yield {
+  private def rowToCsv(schema: StructType, row: Row): List[String] = {
+    for ((field, i) <- schema.fields.zipWithIndex) yield {
       get(row, i, field.`type`)
     }
   }
 
-  private def get(row: StructLiteral, i: Int, typ: ValueType): String = {
+  private def get(row: Row, i: Int, typ: ValueType): String = {
     if (row.isNullAt(i)) {
       null
     } else typ match {
@@ -115,7 +115,7 @@ class OutputWriterThread(workerId: UUID, qp: QueryPlan, rowQ: LinkedBlockingQueu
         val micros = row.getLong(i)
         (BigDecimal(micros) / 1000000).toString()
       case DecimalType(precision, scale) =>
-        row.getDecimal(i, precision, scale).toString()
+        row.getDecimal(i, precision, scale).toString
       case other =>
         // TODO arrays, maps
         sys.error(s"Can't serialize $other values")

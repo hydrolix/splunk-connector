@@ -1,4 +1,4 @@
-package io.hydrolix.splunk
+package io.hydrolix.connector.splunk
 
 import java.util.UUID
 import java.util.concurrent.LinkedBlockingQueue
@@ -6,11 +6,10 @@ import scala.util.control.Breaks.{break, breakable}
 
 import com.clickhouse.logging.LoggerFactory
 
-import io.hydrolix.connectors.expr.StructLiteral
-import io.hydrolix.connectors.partitionreader.{CoreRowAdapter, RowPartitionReader}
-import io.hydrolix.connectors.types.{StringType, StructType}
+import io.hydrolix.connectors.data.{CoreRowAdapter, Row}
+import io.hydrolix.connectors.partitionreader.RowPartitionReader
+import io.hydrolix.connectors.types.StringType
 import io.hydrolix.connectors.{HdxConnectionInfo, HdxPartitionScanPlan, microsToInstant}
-import io.hydrolix.splunk.HdxQueryCommand.partitionsDoneSignal
 
 /**
  * A thread that repeatedly gets a [[HdxPartitionScanPlan]] from a job queue, runs the scan using [[RowPartitionReader]],
@@ -22,7 +21,7 @@ final class PartitionReaderThread(workerId: UUID,
                                       info: HdxConnectionInfo,
                                         qp: QueryPlan,
                                       jobQ: LinkedBlockingQueue[HdxPartitionScanPlan],
-                                      rowQ: LinkedBlockingQueue[StructLiteral])
+                                      rowQ: LinkedBlockingQueue[Row])
   extends Thread
 {
   private val log = LoggerFactory.getLogger(getClass)
@@ -42,7 +41,7 @@ final class PartitionReaderThread(workerId: UUID,
       while (true) {
         val scan = jobQ.take()
 
-        if (scan eq partitionsDoneSignal) {
+        if (scan eq HdxQueryCommand.partitionsDoneSignal) {
           log.info(s"WORKER-$workerId:READER-$threadNo: Received done signal, no more partitions to scan")
           break()
         }
@@ -51,11 +50,10 @@ final class PartitionReaderThread(workerId: UUID,
 
         val storage = qp.storages.getOrElse(scan.storageId, sys.error(s"Unknown storage #${scan.storageId}"))
 
-        val hdxReader = new RowPartitionReader(info, storage, qp.primaryKeyField, scan, CoreRowAdapter, StructLiteral(Map(), StructType()))
+        val hdxReader = new RowPartitionReader(info, storage, qp.primaryKeyField, scan, CoreRowAdapter, Row.empty)
 
         // For each row from the partition reader...
-        while (hdxReader.next()) {
-          val row = hdxReader.get()
+        hdxReader.stream.forEach { row =>
           val rowTimestamp = microsToInstant(row.getLong(timestampPos))
 
           // Check the row timestamp is actually in the time bounds

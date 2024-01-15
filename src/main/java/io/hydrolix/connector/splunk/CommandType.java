@@ -1,4 +1,4 @@
-package io.hydrolix.splunk;
+package io.hydrolix.connector.splunk;
 
 public enum CommandType {
     streaming,

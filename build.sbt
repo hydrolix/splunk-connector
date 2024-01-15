@@ -1,6 +1,4 @@
-ThisBuild / version := "0.1.0-SNAPSHOT"
-
-ThisBuild / scalaVersion := "2.13.11"
+ThisBuild / scalaVersion := "2.13.12"
 
 lazy val root = (project in file("."))
   .settings(
@@ -35,7 +33,7 @@ mainClass := Some("io.hydrolix.splunk.HdxQueryCommand")
 //Proguard / proguardOptions += ProguardOptions.keepMain(mainClass.value.get)
 
 libraryDependencies ++= Seq(
-  "io.hydrolix" %% "hydrolix-connectors-core" % "0.3.2-SNAPSHOT",
+  "io.hydrolix" %% "hydrolix-connectors-core" % "1.3.1-SNAPSHOT",
   "com.github.tototoshi" %% "scala-csv" % "1.3.10",
   "org.apache.curator" % "curator-recipes" % "5.5.0",
   "com.github.sbt" % "junit-interface" % "0.13.3" % Test,

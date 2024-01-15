@@ -1,4 +1,4 @@
-package io.hydrolix.splunk
+package io.hydrolix.connector.splunk
 
 import java.net.URI
 import java.time.Instant
@@ -12,6 +12,7 @@ import org.apache.curator.framework.recipes.leader.LeaderLatch
 import org.apache.curator.retry.ExponentialBackoffRetry
 import org.slf4j.{Logger, LoggerFactory}
 
+import io.hydrolix.connectors.data.Row
 import io.hydrolix.connectors.expr._
 import io.hydrolix.connectors.types.{StringType, TimestampType}
 import io.hydrolix.connectors.{HdxColumnInfo, HdxConnectionInfo, HdxPartitionScanPlan, JSON, Types, microsToInstant, types, uuid0}
@@ -36,17 +37,23 @@ object HdxQueryCommand {
   private val remoteSidR = """^remote_.*?_([\d.]+)$""".r
   private val cleanSidR = """^([\d.]+)$""".r
 
-  val partitionsDoneSignal = HdxPartitionScanPlan("", "", uuid0, "", types.StructType(), Nil, Map())
-  val outputDoneSignal = StructLiteral(Map(), types.StructType())
+  val partitionsDoneSignal = HdxPartitionScanPlan("", "", uuid0, "", types.StructType(Nil), Nil, Map())
+  val outputDoneSignal = Row.empty
 
   def main(args: Array[String]): Unit = {
     val getInfoMeta = readInitialChunk(System.in)
     logger.info(s"INIT: getinfo metadata: $getInfoMeta")
 
     val kvStoreAccess = if (args.length >= 3) {
-      // TODO see if we can use splunk's secret management
-      logger.info("INIT: Accessing KVStore with basic auth")
-      KVStorePassword(new URI(args(0)), args(1), args(2))
+      args(1) match {
+        case "Bearer" =>
+          logger.info("INIT: Accessing KVStore with token auth")
+          KVStoreBearer(new URI(args(0)), args(2))
+        case user =>
+          // TODO maybe just disallow this
+          logger.info("INIT: Accessing KVStore with basic auth")
+          KVStorePassword(new URI(args(0)), user, args(2))
+      }
     } else {
       logger.info("INIT: Accessing KVStore with session key")
       KVStoreSessionKey(new URI(getInfoMeta.searchInfo.splunkdUri), getInfoMeta.searchInfo.sessionKey)
@@ -212,7 +219,7 @@ object HdxQueryCommand {
         case (k, v) => Equal(GetField(k, StringType), StringLiteral(v))
       }
 
-      val predicatesBlob = compress(serialize(predicates))
+      val predicatesBlob = compress(ser(predicates))
 
       val hdxPartitions = planPartitions(table, cols, predicates, info)
 
@@ -286,9 +293,9 @@ object HdxQueryCommand {
                              : Unit =
   {
     val jobQ = new LinkedBlockingQueue[HdxPartitionScanPlan](10)
-    val rowQ = new LinkedBlockingQueue[StructLiteral](1000)
+    val rowQ = new LinkedBlockingQueue[Row](1000)
 
-    val preds = deserialize[List[Expr[Boolean]]](decompress(qp.predicatesBlob))
+    val preds = deser[List[Expr[Boolean]]](decompress(qp.predicatesBlob))
 
     val hdxCols = qp.cols.fields.map { sf =>
       val hdxType = Types.valueTypeToHdx(sf.`type`)

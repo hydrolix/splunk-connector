@@ -1,4 +1,4 @@
-package io.hydrolix.splunk
+package io.hydrolix.connector.splunk
 
 import java.net.Socket
 import java.net.http.HttpRequest.BodyPublishers
@@ -15,18 +15,18 @@ import io.hydrolix.connectors.JSON
 object Config {
   private val logger = LoggerFactory.getLogger(getClass)
 
-  private val ctx = SSLContext.getInstance("TLS")
-  // TODO make this optional!
-  // TODO make this optional!
-  // TODO make this optional!
-  ctx.init(null, Array(InsecureTrustManager), null)
-  // TODO make this optional!
-  // TODO make this optional!
-  // TODO make this optional!
+  private val client = {
+    val b = HttpClient.newBuilder()
 
-  private val client = HttpClient.newBuilder()
-    .sslContext(ctx)
-    .build()
+    if (System.getProperty("hdx_insecure_tls") == "true") {
+      logger.warn("hdx_insecure_tls is set, using insecure TLS")
+      val ctx = SSLContext.getInstance("TLS")
+      ctx.init(null, Array(InsecureTrustManager), null)
+      b.sslContext(ctx)
+    }
+
+    b.build()
+  }
 
   def load(access: KVStoreAccess, configName: String): HdxConfig = {
     val getConfigs = HttpRequest
@@ -65,12 +65,9 @@ object Config {
 
     val resp = client.send(getPlan, BodyHandlers.ofString())
     resp.statusCode() match {
-      case 200 =>
-        Some(JSON.objectMapper.readValue[QueryPlan](resp.body()))
-      case 404 =>
-        None
-      case other =>
-        sys.error(s"GET query plan resulted in status $other; body was ${resp.body()}")
+      case 200   => Some(JSON.objectMapper.readValue[QueryPlan](resp.body()))
+      case 404   => None
+      case other => sys.error(s"GET query plan resulted in status $other; body was ${resp.body()}")
     }
   }
 

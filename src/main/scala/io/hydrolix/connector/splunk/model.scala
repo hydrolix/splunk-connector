@@ -1,4 +1,4 @@
-package io.hydrolix.splunk
+package io.hydrolix.connector.splunk
 
 import java.net.URI
 import java.time.Instant
@@ -11,9 +11,9 @@ import com.fasterxml.jackson.databind.PropertyNamingStrategies.SnakeCaseStrategy
 import com.fasterxml.jackson.databind.annotation.{JsonDeserialize, JsonNaming, JsonSerialize}
 import com.fasterxml.jackson.databind.{DeserializationContext, JsonDeserializer, JsonSerializer, SerializerProvider}
 
+import io.hydrolix.connectors.api.HdxStorageSettings
 import io.hydrolix.connectors.types.StructType
-import io.hydrolix.connectors.{HdxConnectionInfo, HdxStorageSettings, HdxValueType}
-import io.hydrolix.splunk
+import io.hydrolix.connectors.{HdxConnectionInfo, HdxValueType}
 
 @JsonNaming(classOf[SnakeCaseStrategy])
 case class ChunkedRequestMetadata(action: String,
@@ -67,6 +67,10 @@ case class KVStorePassword(uri: URI, login: String, password: String) extends KV
     val cred = util.Base64.getEncoder.encodeToString(s"$login:$password".getBytes("UTF-8"))
     s"Basic $cred"
   }
+}
+
+case class KVStoreBearer(uri: URI, token: String) extends KVStoreAccess {
+  override def authHeaderValue: String = s"Bearer $token"
 }
 
 case class KVStoreSessionKey(uri: URI, sessionKey: String) extends KVStoreAccess {
@@ -153,12 +157,12 @@ case class ScanJob(
 
 final class StructTypeSerializer extends JsonSerializer[StructType] {
   override def serialize(value: StructType, gen: JsonGenerator, serializers: SerializerProvider): Unit = {
-    gen.writeString(compress(splunk.serialize(value)))
+    gen.writeString(compress(ser(value)))
   }
 }
 
 final class StructTypeDeserializer extends JsonDeserializer[StructType] {
   override def deserialize(p: JsonParser, ctxt: DeserializationContext): StructType = {
-    splunk.deserialize(decompress(p.getValueAsString))
+    deser(decompress(p.getValueAsString))
   }
 }

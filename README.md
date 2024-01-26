@@ -2,32 +2,34 @@
 
 ## Overview
 This is an implementation of Splunk's [Chunked External Search Command](https://dev.splunk.com/enterprise/docs/devtools/customsearchcommands/createcustomsearchcmd/) 
-integration mechanism that can run queries against Hydrolix tables. It reuses major parts of the 
-[Spark connector](https://github.com/hydrolix/spark-connector) implementation for expediency reasons at the moment,
-resulting in a ridiculous 236MB JAR file that bundles most of Spark... We can make it more efficient in a variety of 
-ways if/when that becomes a priority.
+integration mechanism that gives Hydrolix customers the ability to run SPL queries directly against Hydrolix clusters, 
+without ETL. 
+
+It's based on the [connectors-core](https://github.com/hydrolix/connectors-core/) library, like the 
+[Spark](https://github.com/hydrolix/spark-connector/) and [Trino](https://github.com/hydrolix/trino-connector/) 
+connectors, and shares a similar feature set.
 
 ## How to use
 ### Prerequisites
 
 * Install Splunk 9.x
 * [Enable Token Authentication](https://docs.splunk.com/Documentation/Splunk/9.1.0/Security/EnableTokenAuth)
-* Create an auth token for whichever Splunk user you want to run Hydrolix queries as (e.g. `admin`). 
-  * TODO this may not be necessary?
-* A [Zookeeper](https://zookeeper.apache.org/) cluster to coordinate the distribution of work between search head and 
-  search peers 
+* Create an auth token for whichever Splunk user you want to run Hydrolix queries as (e.g. `admin`) and save the token
+  value somewhere.
+* A [Zookeeper](https://zookeeper.apache.org/) cluster that's reachable from the Search Head and any indexers/peers you want to use this connector 
+  with. Zookeeper is used to coordinate the distribution of work between search head and search peers. 
 
 ### Building
 Install [SBT](https://scala-sbt.org/) in whatever way makes sense for your OS
 
 ```
-cd ~/dev/hydrolix
-git clone git@gitlab.com:hydrolix/interop-splunk.git
-cd interop-splunk
+cd ~/dev
+git clone git@github.com:hydrolix/splunk-connector.git hydrolix-splunk-connector
+cd hydrolix-splunk-connector
 sbt -J-Xmx4G assembly
 ```
 
-If all goes well this will produce `~/dev/hydrolix/interop-splunk/target/scala-2.13/splunk-interop-assembly-0.2.0-SNAPSHOT.jar`,
+If all goes well this will produce `~/dev/hydrolix-splunk-connector/target/scala-2.13/splunk-interop-assembly-0.2.0-SNAPSHOT.jar`,
 which is referenced in [commands.conf](./app/default/commands.conf) with a hardcoded path; you'll need to update it
 to suit your environment, because Splunk doesn't support environment variables in .conf files! :/ 
 
@@ -53,9 +55,9 @@ $ cat kv.json
 ```json
 {
   "_key": "default",
-  "jdbc_url": "jdbc:clickhouse:tcp://gcp-prod-test.hydrolix.net:9440/_local?ssl=true",
-  "api_url": "https://gcp-prod-test.hydrolix.net/config/v1/",
-  "username": "alex@hydrolix.io",
+  "jdbc_url": "jdbc:clickhouse:tcp://hydrolix.example.com:8088/_local?ssl=true",
+  "api_url": "https://hydrolix.example.com/config/v1/",
+  "username": "user@example.com",
   "password": "REDACTED",
   "cloud_cred_1": "H4sIAAAREDACTED",
   "cloud_cred_2": null,
@@ -72,7 +74,7 @@ $ curl -k -u admin:REDACTED \
     --data-binary @kv.json 
 ```
 
-#### Checking the Configuration was Created Successfully
+#### Checking that the Configuration was Created Successfully
 ```shell
 curl -k -u admin:REDACTED \
     https://localhost:8089/servicesNS/nobody/hydrolix/storage/collections/data/hdx_config/default \
@@ -82,15 +84,28 @@ curl -k -u admin:REDACTED \
 {
   "_key": "default",
   "_user": "admin",
-  "jdbc_url": "jdbc:clickhouse:https://gcp-prod-test.hydrolix.net:8088?ssl=true",
-  "api_url": "https://gcp-prod-test.hydrolix.net/config/v1/",
-  "username": "alex@hydrolix.io",
+  "jdbc_url": "jdbc:clickhouse:https://hydrolix.example.com:8088?ssl=true",
+  "api_url": "https://hydrolix.example.com/config/v1/",
+  "username": "user@example.com",
   "password": "REDACTED",
   "cloud_cred_1": "H4sIAAAREDACTED",
   "cloud_cred_2": null,
   "zookeeper_servers": ["localhost:2181"]  
 }
 ```
+
+#### Giving Search Peers Access to KVStore
+Any indexer or search peer you want to participate in a Hydrolix distributed search needs access to the KVStore on the 
+Search Head, and isn't given such access automatically. Create a `local/commands.conf` file on the peers/indexers with 
+contents like the following:
+```
+command.arg.4 = https://<KV store hostname>:8089/servicesNS/nobody/hydrolix/storage/collections/data/config
+command.arg.5 = <splunk admin username> or "Bearer"
+command.arg.6 = <splunk admin password> or <splunk authn token value>
+```
+Note that the indices used here (4, 5, 6) must follow contiguously from those used in 
+[default/commands.conf](./app/default/commands.conf): if you add or remove any `command.arg.<n>` lines in there, 
+you'll need to renumber the `command.arg.<n>` lines in the `local/commands.conf` on your peers/indexers to suit.
 
 ## Running Queries
 
@@ -116,7 +131,7 @@ deployed and are registered as remote peers with the search head) do the followi
  * Generate a unique UUID. This ID is only used for the duration of this search.
  * Read the [HDXConfig](src/main/scala/io/hydrolix/splunk/model.scala#L77-101) from the Splunk KV store
    * On the search head, we can use the [URL and session key provided in the command's `getinfo` request](./src/main/scala/io/hydrolix/splunk/model.scala#L34-35).
-   * On indexers, we need command-line arguments to give us the URL, username and password of the KV store where
+   * On indexers, we need command-line arguments to give us the URL and authentication token of the KV store where
      configuration will be made available (typically on the search head)
  * Canonicalize the Splunk Search ID (`sid`):
    * On the search head, it will be a fractional timestamp, e.g. `1234567890.12345` and can be used as-is
@@ -127,19 +142,20 @@ deployed and are registered as remote peers with the search head) do the followi
  * Initiate a leader election process incorporating the canonical `sid` in the path 
  * Retry 5 times once per second until the leadership election has concluded
  * If leadership election has not concluded, crash
- * Once leadership election has concluded, the leader assumes the PLANNER role, and all non-leaders assume the WORKER role.
+ * Once leadership election has concluded, the leader assumes the PLANNER role, and all non-leaders assume the WORKER 
+   role.
+ * Proceed to the PLAN phase.
 
 ## PLAN phase
 
 ### PLANNER role
 During the PLAN phase, the singular node that "won" the leader election assumes the PLANNER role and does the following:
  * Connect to the Hydrolix catalog (via API & JDBC) to identify which partitions will need to be scanned for this query
-   * Note that this heavily reuses code from [hydrolix-spark-connector](https://github.com/hydrolix/spark-connector/)
    * This does the following optimizations:
-     * partition elimination by time range
+     * partition elimination by time range using the Splunk search time picker
      * projection elimination (only retrieving columns that are requested/referenced) 
      * (limited) predicate pushdown (strings only, equality only)
- * Get the IDs of all nodes partitipating in this search (including the planner's ID) from the Zookeeper leader election
+ * Get the IDs of all nodes participating in this search (including the planner's ID) from the Zookeeper leader election
  * Write the [QueryPlan](src/main/scala/io/hydrolix/splunk/model.scala#L98-135) to the Splunk KV store, including
    the list of participating node IDs
  * Distribute every partition that needs to be scanned to one of the workers that was identified in the leader election
@@ -148,7 +164,7 @@ During the PLAN phase, the singular node that "won" the leader election assumes 
  * Transition to the SCAN phase
 
 ### WORKER role
-During the PLAN phase, node(s) that "lost" the leader election assume the WORKER role and do the following:
+During the PLAN phase, every node that lost the leader election assumes the WORKER role and does the following:
  * Retry 30 times, once per second, to read the QueryPlan for the current `sid` from the Splunk KV store; if the plan
    can't be read during this time, crash
  * Check whether this worker's ID is included in the plan's `worker_ids` field. If not, exit quietly without doing 
@@ -162,19 +178,15 @@ On every node participating in the search, including the node that _was_ the PLA
  * Create a temporary CSV file
  * For each partition path in this node's assigned `ScanJob`:
    * Use the `QueryPlan` and partition path to instantiate a `HdxPartitionReader`
-   * Get each record from the partition
-   * Evaluate time range and string equality predicates
-     * Note that we need to eval these predicates since `turbine_cmd hdx_reader` only does block-level filtering 
-       at best.
-   * Write records that satisfy predicates to the temporary CSV file
- * Stream the temporary CSV file to stdout, indicating there won't be any more data from this worker by setting `finished=true` in the 
-   response metadata.
+   * For record read from the partition:
+     * Evaluate time range and string equality predicates
+       * Note that we need to eval these predicates since `turbine_cmd hdx_reader` only does block-level filtering 
+         at best.
+     * Write records that satisfy predicates to the temporary CSV file
+ * Stream the temporary CSV file to stdout, indicating there won't be any more data from this worker by setting 
+   `finished=true` in the response metadata.
 
 # Roadmap Items
-## Short Term
-### KV store access
-Figure out how indexers can read data from the KV store without needing login/password command line args, or stop using 
-KV store altogether and use Zookeeper instead I guess. 
 
 ### Secret Management
 Stop storing the cleartext Hydrolix password in the KVstore. Splunk has a [secret service](https://dev.splunk.com/enterprise/docs/developapps/manageknowledge/secretstorage/), 
@@ -188,15 +200,6 @@ to run in parallel
 Consider storing plans and scan jobs in ZK instead of KVstore, so they can be garbage-collected automatically. Before 
 doing this, check if object size in ZK is likely to be an issue, because plans can be large (e.g. `select *` needs the
 entire schema, which could be 500kB)
-
-### Parallelize workers
-Consider allowing workers to spawn multiple concurrent scan threads, e.g. one per core? They would probably need to 
-send output to a shared queue.
-
-### Chunked output, no tmp
-Write output from partition reader(s):
- * Directly to stdout, not a tmp file
- * In 50k chunks, with a request/response in between
 
 ## Longer Term
 

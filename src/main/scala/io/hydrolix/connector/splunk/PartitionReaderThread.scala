@@ -50,7 +50,7 @@ final class PartitionReaderThread(workerId: UUID,
 
         val storage = qp.storages.getOrElse(scan.storageId, sys.error(s"Unknown storage #${scan.storageId}"))
 
-        val hdxReader = new RowPartitionReader(info, storage, qp.primaryKeyField, scan, CoreRowAdapter, Row.empty)
+        val hdxReader = new RowPartitionReader(info, storage, scan, CoreRowAdapter, Row.empty)
 
         // For each row from the partition reader...
         hdxReader.stream.forEach { row =>

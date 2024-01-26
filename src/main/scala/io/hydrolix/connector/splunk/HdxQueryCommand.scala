@@ -37,7 +37,7 @@ object HdxQueryCommand {
   private val remoteSidR = """^remote_.*?_([\d.]+)$""".r
   private val cleanSidR = """^([\d.]+)$""".r
 
-  val partitionsDoneSignal = HdxPartitionScanPlan("", "", uuid0, "", types.StructType(Nil), Nil, Map())
+  val partitionsDoneSignal = HdxPartitionScanPlan("", "", "_time", uuid0, "", types.StructType(Nil), Nil, Map())
   val outputDoneSignal = Row.empty
 
   def main(args: Array[String]): Unit = {
@@ -212,10 +212,10 @@ object HdxQueryCommand {
 
       val otherTerms = getOtherTerms(args).toMap
 
-      val predicates = List(And(List(
+      val predicates = List(And(
         GreaterEqual(GetField(table.primaryKeyField, TimestampType(3)), TimestampLiteral(minTimestamp)),
         LessEqual(GetField(table.primaryKeyField, TimestampType(3)), TimestampLiteral(maxTimestamp)),
-      ))) ++ otherTerms.map {
+      )) ++ otherTerms.map {
         case (k, v) => Equal(GetField(k, StringType), StringLiteral(v))
       }
 
@@ -323,7 +323,7 @@ object HdxQueryCommand {
     outputThread.start()
 
     for ((path, storageId) <- partitionPaths.zip(storageIds)) {
-      val scan = HdxPartitionScanPlan(qp.db, qp.table, storageId, path, qp.cols, preds, hdxCols)
+      val scan = HdxPartitionScanPlan(qp.db, qp.table, qp.primaryKeyField, storageId, path, qp.cols, preds, hdxCols)
       jobQ.put(scan)
     }
 

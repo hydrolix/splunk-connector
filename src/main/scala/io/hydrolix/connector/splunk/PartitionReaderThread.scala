@@ -53,7 +53,7 @@ final class PartitionReaderThread(workerId: UUID,
         val hdxReader = new RowPartitionReader(info, storage, scan, CoreRowAdapter, Row.empty)
 
         // For each row from the partition reader...
-        hdxReader.stream.forEach { row =>
+        hdxReader.iterator.forEachRemaining { row =>
           val rowTimestamp = microsToInstant(row.getLong(timestampPos))
 
           // Check the row timestamp is actually in the time bounds

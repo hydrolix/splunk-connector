@@ -50,12 +50,15 @@ case class GetInfoResponseMeta(`type`: CommandType,
                             inspector: InspectorMessages)
 
 case class InspectorMessages(messages: List[(String, String)])
+object InspectorMessages {
+  val Empty = InspectorMessages(Nil)
+}
 
 /**
  * TODO there should definitely be more fields here...
  */
 @JsonNaming(classOf[SnakeCaseStrategy])
-case class ExecuteResponseMeta(finished: Boolean)
+case class ExecuteResponseMeta(finished: Boolean, inspector: InspectorMessages = InspectorMessages.Empty)
 
 sealed trait KVStoreAccess {
   val uri: URI
@@ -88,7 +91,8 @@ case class HdxConfig(
                                   password: String,
   @JsonProperty("cloud_cred_1") cloudCred1: String,
   @JsonProperty("cloud_cred_2") cloudCred2: Option[String],
-                          zookeeperServers: List[String]
+                          zookeeperServers: List[String],
+                               endpointUrl: Option[String]
 ) {
   val connectionInfo =
     HdxConnectionInfo(
@@ -99,7 +103,8 @@ case class HdxConfig(
       None,
       cloudCred1,
       cloudCred2,
-      None
+      None,
+      extraOpts = Map() ++ endpointUrl.map(HdxConnectionInfo.OPT_STORAGE_ENDPOINT_URI -> _)
     )
 }
 

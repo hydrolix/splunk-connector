@@ -28,7 +28,7 @@ object Config {
     b.build()
   }
 
-  def load(access: KVStoreAccess, configName: String): HdxConfig = {
+  def load(access: KVStoreAccess, configName: String): Either[String, HdxConfig] = {
     val getConfigs = HttpRequest
       .newBuilder(access.uri.resolve(s"/servicesNS/nobody/hydrolix/storage/collections/data/hdx_config/$configName"))
       .GET()
@@ -36,7 +36,11 @@ object Config {
       .build()
 
     val resp = client.send(getConfigs, BodyHandlers.ofString())
-    JSON.objectMapper.readValue[HdxConfig](resp.body())
+    if (resp.statusCode() == 200) {
+      Right(JSON.objectMapper.readValue[HdxConfig](resp.body()))
+    } else {
+      Left(s"Got ${resp.statusCode()} trying to read config -- it needs to be created, see documentation at https://github.com/hydrolix/splunk-connector/")
+    }
   }
 
   // TODO we're assuming `sid` is globally unique across any number of search heads, that's probably not safe

@@ -11,3 +11,6 @@ target/
 
 ### Misc ###
 .bsp/
+
+# Try not to commit secrets
+app/local/commands.conf

@@ -17,6 +17,8 @@ import io.hydrolix.connectors.expr._
 import io.hydrolix.connectors.types.{StringType, TimestampType}
 import io.hydrolix.connectors.{HdxColumnInfo, HdxConnectionInfo, HdxPartitionScanPlan, JSON, Types, microsToInstant, types, uuid0}
 
+case class FriendlyException(msg: String) extends RuntimeException(msg)
+
 //noinspection TypeAnnotation
 object HdxQueryCommand {
   private val logger = LoggerFactory.getLogger(getClass)
@@ -75,65 +77,39 @@ object HdxQueryCommand {
     readChunk(System.in) match {
       case (None, _) => sys.exit(0)
       case (Some(execMeta), execData) => // TODO pay attention to what's in the `execute` request someday maybe
-        val nodeId = UUID.randomUUID()
+        try {
+          val nodeId = UUID.randomUUID()
 
-        logger.info(s"INIT-$nodeId: execute metadata: $execMeta")
-        logger.info(s"INIT-$nodeId: execute data: $execData")
+          logger.info(s"INIT-$nodeId: execute metadata: $execMeta")
+          logger.info(s"INIT-$nodeId: execute data: $execData")
 
-        val hdxConfig = Config.load(kvStoreAccess, configName)
+          val hdxConfig = Config.load(kvStoreAccess, configName).fold(msg => throw FriendlyException(msg), identity)
 
-        logger.info(s"INIT-$nodeId: config loaded: ${hdxConfig.copy(password = "[REDACTED]")}")
+          logger.info(s"INIT-$nodeId: config loaded: ${hdxConfig.copy(password = "[REDACTED]")}")
 
-        val now = System.currentTimeMillis()
+          val now = System.currentTimeMillis()
 
-        val sid = getInfoMeta.searchInfo.sid match {
-          case remoteSidR(s) => s
-          case cleanSidR(s) => s
-          case other => sys.error(s"Couldn't parse search ID from $other")
-        }
+          val sid = getInfoMeta.searchInfo.sid match {
+            case remoteSidR(s) => s
+            case cleanSidR(s) => s
+            case other => sys.error(s"Couldn't parse search ID from $other")
+          }
 
-        val ll = doLeaderElection(nodeId, sid, hdxConfig.zookeeperServers)
+          val ll = doLeaderElection(nodeId, sid, hdxConfig.zookeeperServers)
 
-        if (ll.hasLeadership) {
-          logger.info(s"PLANNER-$nodeId: I'm the planner")
+          if (ll.hasLeadership) {
+            logger.info(s"PLANNER-$nodeId: I'm the planner")
 
-          val workerIds = ll.getParticipants.asScala.toList.map(p => UUID.fromString(p.getId))
+            val workerIds = ll.getParticipants.asScala.toList.map(p => UUID.fromString(p.getId))
 
-          val minTimestamp = microsToInstant((getInfoMeta.searchInfo.earliestTime * 1000000).toLong)
-          val maxTimestamp = microsToInstant((getInfoMeta.searchInfo.latestTime * 1000000).toLong)
+            val minTimestamp = microsToInstant((getInfoMeta.searchInfo.earliestTime * 1000000).toLong)
+            val maxTimestamp = microsToInstant((getInfoMeta.searchInfo.latestTime * 1000000).toLong)
 
-          val plan = doPlan(minTimestamp, maxTimestamp, getInfoMeta.searchInfo.args, kvStoreAccess, nodeId, sid, hdxConfig.connectionInfo, now, workerIds)
+            val plan = doPlan(minTimestamp, maxTimestamp, getInfoMeta.searchInfo.args, kvStoreAccess, nodeId, sid, hdxConfig.connectionInfo, now, workerIds)
 
-          // Transition to worker mode
-          logger.info(s"PLANNER-$nodeId: I'm a worker now")
+            // Transition to worker mode
+            logger.info(s"PLANNER-$nodeId: I'm a worker now")
 
-          val scanJob = retry(
-            logger, s"WORKER-$nodeId: Waiting for scan job",
-            MaxScanAttempts, ScanAttemptWait,
-            Config.readScanJob(kvStoreAccess, sid, nodeId)
-          ).getOrElse(sys.error("Couldn't get scan job"))
-
-          // TODO claim the scanJob
-
-          // TODO make sure every ScanJob is claimed
-          // TODO make sure every ScanJob is claimed
-          // TODO make sure every ScanJob is claimed
-          // TODO make sure every ScanJob is claimed
-
-          doScan(nodeId, hdxConfig.connectionInfo, plan, scanJob.partitionPaths, scanJob.storageIds)
-        } else {
-          logger.info(s"WORKER-$nodeId: I'm a worker")
-
-          val plan = retry(
-            logger, s"WORKER-$nodeId: Waiting for query plan",
-            MaxPlanAttempts, PlanAttemptWait,
-            Config.readPlan(kvStoreAccess, sid)
-          ).getOrElse(sys.error("Couldn't get query plan"))
-
-          if (!plan.workerIds.contains(nodeId)) {
-            logger.info(s"WORKER-$nodeId: Planner didn't have any work for me")
-            writeChunk(System.out, JSON.objectMapper.writeValueAsBytes(ExecuteResponseMeta(finished = true)), None)
-          } else {
             val scanJob = retry(
               logger, s"WORKER-$nodeId: Waiting for scan job",
               MaxScanAttempts, ScanAttemptWait,
@@ -142,10 +118,41 @@ object HdxQueryCommand {
 
             // TODO claim the scanJob
 
-            doScan(nodeId, hdxConfig.connectionInfo, plan, scanJob.partitionPaths, scanJob.storageIds)
-          }
+            // TODO make sure every ScanJob is claimed
+            // TODO make sure every ScanJob is claimed
+            // TODO make sure every ScanJob is claimed
+            // TODO make sure every ScanJob is claimed
 
-          ll.close()
+            doScan(nodeId, hdxConfig.connectionInfo, plan, scanJob.partitionPaths, scanJob.storageIds)
+          } else {
+            logger.info(s"WORKER-$nodeId: I'm a worker")
+
+            val plan = retry(
+              logger, s"WORKER-$nodeId: Waiting for query plan",
+              MaxPlanAttempts, PlanAttemptWait,
+              Config.readPlan(kvStoreAccess, sid)
+            ).getOrElse(sys.error("Couldn't get query plan"))
+
+            if (!plan.workerIds.contains(nodeId)) {
+              logger.info(s"WORKER-$nodeId: Planner didn't have any work for me")
+              writeChunk(System.out, JSON.objectMapper.writeValueAsBytes(ExecuteResponseMeta(finished = true)), None)
+            } else {
+              val scanJob = retry(
+                logger, s"WORKER-$nodeId: Waiting for scan job",
+                MaxScanAttempts, ScanAttemptWait,
+                Config.readScanJob(kvStoreAccess, sid, nodeId)
+              ).getOrElse(sys.error("Couldn't get scan job"))
+
+              // TODO claim the scanJob
+
+              doScan(nodeId, hdxConfig.connectionInfo, plan, scanJob.partitionPaths, scanJob.storageIds)
+            }
+
+            ll.close()
+          }
+        } catch {
+          case fe: FriendlyException =>
+            writeChunk(System.out, JSON.objectMapper.writeValueAsBytes(ExecuteResponseMeta(true, InspectorMessages(List("ERROR" -> fe.msg)))), None)
         }
     }
   }

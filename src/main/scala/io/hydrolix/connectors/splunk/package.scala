@@ -1,4 +1,4 @@
-package io.hydrolix.connector
+package io.hydrolix.connectors
 
 import java.io.{ByteArrayInputStream, ByteArrayOutputStream, InputStream, ObjectInputStream, ObjectOutputStream, OutputStream, PushbackInputStream}
 import java.util.Base64

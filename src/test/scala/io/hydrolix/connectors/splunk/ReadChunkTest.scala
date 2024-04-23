@@ -1,4 +1,4 @@
-package io.hydrolix.connector.splunk
+package io.hydrolix.connectors.splunk
 
 import java.io.{ByteArrayInputStream, ByteArrayOutputStream}
 import java.time.Instant

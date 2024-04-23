@@ -1,4 +1,4 @@
-package io.hydrolix.connector.splunk
+package io.hydrolix.connectors.splunk
 
 import java.net.URI
 import java.time.Instant

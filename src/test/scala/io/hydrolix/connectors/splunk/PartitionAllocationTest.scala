@@ -1,4 +1,4 @@
-package io.hydrolix.connector.splunk
+package io.hydrolix.connectors.splunk
 
 import org.junit.Assert.assertEquals
 import org.junit.Test

@@ -23,17 +23,10 @@ assemblyMergeStrategy := {
     oldStrategy(x)
 }
 
-mainClass := Some("io.hydrolix.splunk.HdxQueryCommand")
-
-//enablePlugins(SbtProguard)
-//
-//Proguard / proguardOptions ++= Seq("-dontnote", "-ignorewarnings")
-//(Proguard / proguard) / javaOptions := Seq("-Xmx2g")
-//
-//Proguard / proguardOptions += ProguardOptions.keepMain(mainClass.value.get)
+mainClass := Some("io.hydrolix.connectors.splunk.HdxQueryCommand")
 
 libraryDependencies ++= Seq(
-  "io.hydrolix" %% "hydrolix-connectors-core" % "1.5.0-SNAPSHOT",
+  "io.hydrolix" %% "hydrolix-connectors-core" % "1.5.0",
   "com.github.tototoshi" %% "scala-csv" % "1.3.10",
   "org.apache.curator" % "curator-recipes" % "5.5.0",
   "com.github.sbt" % "junit-interface" % "0.13.3" % Test,

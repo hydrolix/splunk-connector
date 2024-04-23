@@ -1,4 +1,4 @@
-package io.hydrolix.connector.splunk
+package io.hydrolix.connectors.splunk
 
 import java.net.Socket
 import java.net.http.HttpRequest.BodyPublishers
